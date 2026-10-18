@@ -1,15 +1,10 @@
 # SwiftSend — Frontend (React Web App)
 
 A fully functioning **frontend** for the SwiftSend delivery platform — Customer app, Rider app, and
-Admin dashboard, all in one web app. Built with **React + TypeScript + Vite + React Router**. No native
-mobile tooling, no Xcode, no Android Studio — it's a website, and it runs with two commands.
+Admin dashboard, all in one web app. Built with **React + TypeScript + Vite + React Router**.
 
-This README is written for two audiences: anyone running the app locally, and **the backend developer**
-who needs to know exactly what API this frontend expects. Section 6 is the important one for that —
-it documents every function in `src/services/mockApi.ts` as if it were an API spec, because that file
-**is** the API contract. Every screen calls it exactly the way it would call a real backend; replacing
-its internals with real HTTP calls (keeping the same function names and return shapes) is the entire
-integration job.
+This README is written for **the backend developer** who needs to know exactly what API this frontend expects. Section 6 is the important one for that, it documents every function in `src/services/mockApi.ts` as if it were an API spec, because that file
+**is** the API contract. Every screen calls it exactly the way it would call a real backend; replacing its internals with real HTTP calls (keeping the same function names and return shapes) is the entire integration job.
 
 ---
 
@@ -49,11 +44,10 @@ npm run preview    # serve the production build locally to sanity-check it
 
 There is **one login page** (`/login`) and **one registration page** (`/register`) for the whole app:
 
-- **Login:** enter your email/phone and password. `mockApi.login()` checks it against customer, rider,
-  and admin accounts and tells the app which role matched — the person never has to say which kind of
-  account they have.
+- **Login:** enter your email/phone and password. `mockApi.login()` checks it against customer, rider
+  and admin accounts and tells the app which role matched. The person never has to say which kind of account they have.
 - **Register:** choose **Customer** or **Rider** at the top of the form. Admin accounts are never
-  self-registered — they're created from **Admin → Settings → Admin team**. Picking Rider reveals the
+  self-registered. They're created from **Admin → Settings → Admin team**. Picking Rider reveals the
   extra fields a rider needs: vehicle type, plate number, and required document uploads.
 
 ## 4. Demo accounts
@@ -103,12 +97,12 @@ src/
 ## 6. ★ The API contract (`src/services/mockApi.ts`)
 
 **This is the single most important section for backend integration.** Every function below is called
-by the frontend exactly as documented — same inputs, same outputs. Replacing the mock bodies with real
+by the frontend exactly as documented, same inputs, same outputs. Replacing the mock bodies with real
 `fetch`/`axios` calls (keeping the signatures identical) means zero changes anywhere else in the app.
 
 All functions are `async` and currently simulate latency with `await mockDelay()`; a real implementation
 would `await fetch(...)` instead. All mock data currently lives in in-memory arrays at the top of the
-file (`customerDb`, `riderDb`, `adminDb`, etc.) — a real backend replaces those with actual persistence.
+file (`customerDb`, `riderDb`, `adminDb`, etc.) a real backend replaces those with actual persistence.
 
 ### 6.1 Authentication
 
