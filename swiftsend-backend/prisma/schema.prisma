@@ -1,0 +1,273 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ---------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------
+
+enum UserRole {
+  customer
+  rider
+  admin
+}
+
+enum VehicleType {
+  bike
+  car
+  van
+  truck
+}
+
+enum DocumentKind {
+  idFront
+  idBack
+  drivingLicense
+  insurance
+  others
+}
+
+enum DeliveryStatus {
+  pending
+  searching
+  accepted
+  arriving
+  pickedUp
+  inTransit
+  delivered
+  cancelled
+}
+
+enum DeliveryType {
+  immediate
+  scheduled
+}
+
+enum RiderApprovalStatus {
+  Pending
+  Approved
+  Suspended
+}
+
+enum AccountStatus {
+  Active
+  Suspended
+}
+
+enum PaymentStatus {
+  Paid
+  Pending
+  Failed
+}
+
+// ---------------------------------------------------------
+// CORE USER & AUTHENTICATION
+// ---------------------------------------------------------
+
+model User {
+  id           String        @id @default(uuid())
+  email        String        @unique
+  phone        String        @unique
+  passwordHash String
+  fullName     String
+  role         UserRole
+  status       AccountStatus @default(Active)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  customerProfile CustomerProfile?
+  riderProfile    RiderProfile?
+  adminProfile    AdminProfile?
+  refreshTokens   RefreshToken[]
+
+  @@index([email])
+  @@index([phone])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------
+// ROLE PROFILES
+// ---------------------------------------------------------
+
+model CustomerProfile {
+  id             String      @id @default(uuid())
+  userId         String      @unique
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  avatarInitials String
+  walletBalance  Decimal     @default(0.00) @db.Decimal(12, 2)
+  deliveries     Delivery[]  @relation("CustomerDeliveries")
+  walletTxns     WalletTxn[]
+}
+
+model RiderProfile {
+  id             String              @id @default(uuid())
+  userId         String              @unique
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicleType    VehicleType
+  plateNumber    String              @unique
+  rating         Decimal             @default(5.00) @db.Decimal(3, 2)
+  trips          Int                 @default(0)
+  isOnline       Boolean             @default(false)
+  approvalStatus RiderApprovalStatus @default(Pending)
+  facePhotoUri   String? // Live selfie captured during registration
+  lastLatitude   Float?
+  lastLongitude  Float?
+  lastLocationAt DateTime?
+
+  documents  RiderDocument[]
+  deliveries Delivery[]      @relation("RiderDeliveries")
+  earnings   RiderEarning[]
+}
+
+model AdminProfile {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------
+// RIDER COMPLIANCE DOCUMENTS
+// ---------------------------------------------------------
+
+model RiderDocument {
+  id         String       @id @default(uuid())
+  riderId    String
+  rider      RiderProfile @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  kind       DocumentKind
+  label      String
+  required   Boolean      @default(true)
+  uri        String?
+  uploadedAt DateTime?
+  expiresAt  DateTime? // Nullable for "others"
+  isVerified Boolean      @default(false)
+  verifiedAt DateTime?
+
+  @@unique([riderId, kind])
+  @@index([expiresAt])
+}
+
+// ---------------------------------------------------------
+// DELIVERIES & LIFECYCLE
+// ---------------------------------------------------------
+
+model Delivery {
+  id             String          @id @default(uuid())
+  trackingNumber String          @unique
+  customerId     String
+  customer       CustomerProfile @relation("CustomerDeliveries", fields: [customerId], references: [id])
+  riderId        String?
+  rider          RiderProfile?   @relation("RiderDeliveries", fields: [riderId], references: [id])
+
+  pickupAddress   String
+  pickupLatitude  Float
+  pickupLongitude Float
+
+  dropoffAddress   String
+  dropoffLatitude  Float
+  dropoffLongitude Float
+
+  packageType        String
+  packageDescription String
+  weight             String
+  instructions       String?
+  deliveryType       DeliveryType @default(immediate)
+  vehicleType        VehicleType
+
+  distanceKm  Decimal @db.Decimal(8, 2)
+  etaMinutes  Int
+  baseFee     Decimal @db.Decimal(10, 2)
+  distanceFee Decimal @db.Decimal(10, 2)
+  serviceFee  Decimal @db.Decimal(10, 2)
+  totalFee    Decimal @db.Decimal(10, 2)
+
+  status        DeliveryStatus @default(pending)
+  deliveryOtp   String // 4-digit code required to complete delivery
+  rating        Int? // 1 to 5 stars
+  ratingComment String?
+
+  acceptedAt  DateTime?
+  pickedUpAt  DateTime?
+  deliveredAt DateTime?
+  cancelledAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  payment Payment?
+
+  @@index([status])
+  @@index([customerId])
+  @@index([riderId])
+}
+
+// ---------------------------------------------------------
+// PAYMENTS & WALLET TRANSACTIONS
+// ---------------------------------------------------------
+
+model Payment {
+  id             String        @id @default(uuid())
+  deliveryId     String        @unique
+  delivery       Delivery      @relation(fields: [deliveryId], references: [id])
+  amount         Decimal       @db.Decimal(10, 2)
+  paymentMethod  String        @default("wallet") // wallet | card | mobile_money
+  status         PaymentStatus @default(Pending)
+  transactionRef String?       @unique
+  createdAt      DateTime      @default(now())
+}
+
+model WalletTxn {
+  id         String          @id @default(uuid())
+  customerId String
+  customer   CustomerProfile @relation(fields: [customerId], references: [id])
+  label      String
+  amount     Decimal         @db.Decimal(10, 2) // Negative for debit, positive for credit
+  balance    Decimal         @db.Decimal(12, 2)
+  createdAt  DateTime        @default(now())
+
+  @@index([customerId])
+}
+
+model RiderEarning {
+  id         String       @id @default(uuid())
+  riderId    String
+  rider      RiderProfile @relation(fields: [riderId], references: [id])
+  deliveryId String
+  amount     Decimal      @db.Decimal(10, 2)
+  createdAt  DateTime     @default(now())
+
+  @@index([riderId])
+}
+
+// ---------------------------------------------------------
+// LIVE PLATFORM SETTINGS (Dynamic Admin Configuration)
+// ---------------------------------------------------------
+
+model PlatformSettings {
+  id                Int      @id @default(1)
+  baseFee           Decimal  @default(15.00) @db.Decimal(8, 2)
+  perKmRate         Decimal  @default(3.50) @db.Decimal(8, 2)
+  serviceFee        Decimal  @default(2.00) @db.Decimal(8, 2)
+  activeRegions     String   @default("Greater Accra, Kumasi, Takoradi")
+  coverageRadiusKm  Float    @default(25.0)
+  pushEnabled       Boolean  @default(true)
+  smsEnabled        Boolean  @default(true)
+  maintenanceMode   Boolean  @default(false)
+  appVersion        String   @default("1.0.0")
+  promoTitle        String   @default("Get 20% off your next 3 deliveries")
+  promoSubtitle     String   @default("Use code SWIFT20 at checkout")
+  promoPercentLabel String   @default("20% OFF")
+  updatedAt         DateTime @updatedAt
+}
