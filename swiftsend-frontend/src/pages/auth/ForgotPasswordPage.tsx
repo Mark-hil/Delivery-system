@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { TopBar } from "@/components/TopBar";
 import { TextField } from "@/components/TextField";
 import { Button } from "@/components/Button";
-import { isEmail, isGhanaPhone } from "@/utils/validators";
+import { isEmail, isPhone } from "@/utils/validators";
 import { useUI } from "@/context/UIContext";
 import * as api from "@/services/mockApi";
 
@@ -18,7 +18,7 @@ export const ForgotPasswordPage: React.FC = () => {
   const submit = async () => {
     const trimmed = destination.trim();
     if (channel === "sms") {
-      if (!isGhanaPhone(trimmed)) {
+      if (!isPhone(trimmed)) {
         setError("Enter a valid Ghana phone number (e.g. 0248125567 or +233248125567)");
         return;
       }

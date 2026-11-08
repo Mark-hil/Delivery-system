@@ -1,8 +1,13 @@
+import * as dns from "dns";
 import { NestFactory } from "@nestjs/core";
 import { ValidationPipe } from "@nestjs/common";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import helmet from "helmet";
 import { AppModule } from "./app.module.js";
+
+// Prefer IPv4 DNS records first to prevent Node.js fetch (undici) from timing out
+// on dual-stack Cloudflare endpoints (such as Arkesel SMS and OSRM) when IPv6 is unreachable.
+dns.setDefaultResultOrder("ipv4first");
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });

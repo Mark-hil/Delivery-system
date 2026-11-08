@@ -1,5 +1,61 @@
+import * as dns from "dns";
+import * as https from "https";
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+
+dns.setDefaultResultOrder("ipv4first");
+
+function postJsonIpv4(
+  urlStr: string,
+  headers: Record<string, string>,
+  bodyObj: unknown
+): Promise<{ ok: boolean; status: number; statusText: string; data: any }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(urlStr);
+    const payload = JSON.stringify(bodyObj);
+    const req = https.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port || 443,
+        path: parsed.pathname + parsed.search,
+        method: "POST",
+        family: 4, // Strictly IPv4 to avoid Cloudflare IPv6 connect timeout
+        headers: {
+          ...headers,
+          "Content-Length": Buffer.byteLength(payload).toString(),
+        },
+        timeout: 10000,
+      },
+      (res) => {
+        let raw = "";
+        res.on("data", (chunk) => {
+          raw += chunk;
+        });
+        res.on("end", () => {
+          let data: any = null;
+          try {
+            data = JSON.parse(raw);
+          } catch {
+            data = null;
+          }
+          const status = res.statusCode ?? 500;
+          resolve({
+            ok: status >= 200 && status < 300,
+            status,
+            statusText: res.statusMessage ?? "",
+            data,
+          });
+        });
+      }
+    );
+    req.on("timeout", () => {
+      req.destroy(new Error("Arkesel HTTPS request timed out"));
+    });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
 
 export interface SendSmsResult {
   success: boolean;
@@ -78,23 +134,50 @@ export class SmsService {
     }
 
     try {
-      const response = await fetch(this.smsUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "api-key": this.apiKey,
-        },
-        body: JSON.stringify({
-          sender: this.senderId,
-          message,
-          recipients,
-        }),
-      });
+      let ok = false;
+      let status = 500;
+      let statusText = "";
+      let data: any = null;
 
-      const data = await response.json().catch(() => null);
+      try {
+        const response = await fetch(this.smsUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "api-key": this.apiKey,
+          },
+          body: JSON.stringify({
+            sender: this.senderId,
+            message,
+            recipients,
+          }),
+        });
+        ok = response.ok;
+        status = response.status;
+        statusText = response.statusText;
+        data = await response.json().catch(() => null);
+      } catch {
+        // Fallback to explicit IPv4 HTTPS request if global fetch encounters an IPv6 timeout
+        const ipv4Res = await postJsonIpv4(
+          this.smsUrl,
+          {
+            "Content-Type": "application/json",
+            "api-key": this.apiKey,
+          },
+          {
+            sender: this.senderId,
+            message,
+            recipients,
+          }
+        );
+        ok = ipv4Res.ok;
+        status = ipv4Res.status;
+        statusText = ipv4Res.statusText;
+        data = ipv4Res.data;
+      }
 
-      if (!response.ok || (data && data.status === "error")) {
-        const errMsg = data?.message || `HTTP ${response.status} ${response.statusText}`;
+      if (!ok || (data && data.status === "error")) {
+        const errMsg = data?.message || `HTTP ${status} ${statusText}`;
         this.logger.error(`Arkesel SMS delivery failed: ${errMsg}`, data);
         return recipients.map((r) => ({
           success: false,
