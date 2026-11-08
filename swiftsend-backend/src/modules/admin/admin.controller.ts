@@ -15,6 +15,8 @@ import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagg
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard.js";
 import { RolesGuard } from "../auth/guards/roles.guard.js";
 import { Roles } from "../auth/decorators/roles.decorator.js";
+import { CurrentUser } from "../auth/decorators/current-user.decorator.js";
+import type { CurrentUserPayload } from "../auth/decorators/current-user.decorator.js";
 import { AdminService } from "./admin.service.js";
 import { ComplianceService } from "./compliance.service.js";
 import { CreateUserDto } from "./dto/create-user.dto.js";
@@ -90,15 +92,19 @@ export class AdminController {
   @ApiOperation({ summary: "Toggle user account status (Active / Suspended)" })
   async updateUserStatus(
     @Param("id") id: string,
-    @Body() dto: UpdateUserStatusDto
+    @Body() dto: UpdateUserStatusDto,
+    @CurrentUser() user: CurrentUserPayload
   ) {
-    return this.adminService.updateUserStatus(id, dto);
+    return this.adminService.updateUserStatus(id, dto, user.userId);
   }
 
   @Delete("users/:id")
   @ApiOperation({ summary: "Delete user account" })
-  async deleteUser(@Param("id") id: string) {
-    return this.adminService.deleteUser(id);
+  async deleteUser(
+    @Param("id") id: string,
+    @CurrentUser() user: CurrentUserPayload
+  ) {
+    return this.adminService.deleteUser(id, user.userId);
   }
 
   // ---------------------------------------------------------
@@ -209,7 +215,10 @@ export class AdminController {
 
   @Delete("team/:id")
   @ApiOperation({ summary: "Revoke admin privileges" })
-  async removeTeamMember(@Param("id") id: string) {
-    return this.adminService.removeTeamMember(id);
+  async removeTeamMember(
+    @Param("id") id: string,
+    @CurrentUser() user: CurrentUserPayload
+  ) {
+    return this.adminService.removeTeamMember(id, user.userId);
   }
 }

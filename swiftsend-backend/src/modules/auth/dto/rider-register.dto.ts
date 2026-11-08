@@ -7,10 +7,14 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
+  MaxLength,
   MinLength,
   ValidateNested,
 } from "class-validator";
 import { Type } from "class-transformer";
+
+const SAFE_URI_REGEX = /^(https?:\/\/|data:image\/(jpeg|png|webp);base64,|\/uploads\/)/i;
 
 export enum VehicleTypeEnum {
   bike = "bike",
@@ -34,6 +38,7 @@ export class RiderDocumentDto {
 
   @ApiProperty({ example: "Driving license" })
   @IsString()
+  @MaxLength(120)
   label: string;
 
   @ApiProperty({ example: true })
@@ -43,6 +48,10 @@ export class RiderDocumentDto {
   @ApiPropertyOptional({ example: "https://storage.swiftsend.app/docs/license.jpg" })
   @IsOptional()
   @IsString()
+  @MaxLength(2000000)
+  @Matches(SAFE_URI_REGEX, {
+    message: "Document URI must use http(s)://, /uploads/, or a base64 image data URI",
+  })
   uri: string | null;
 
   @ApiPropertyOptional({ example: "2026-10-26T12:00:00Z" })
@@ -99,5 +108,9 @@ export class RiderRegisterDto {
   })
   @IsOptional()
   @IsString()
+  @MaxLength(2000000)
+  @Matches(SAFE_URI_REGEX, {
+    message: "Face photo URI must use http(s)://, /uploads/, or a base64 image data URI",
+  })
   facePhotoUri: string | null;
 }

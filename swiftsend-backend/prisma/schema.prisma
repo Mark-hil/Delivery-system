@@ -62,6 +62,7 @@ enum PaymentStatus {
   Paid
   Pending
   Failed
+  Abandoned
 }
 
 // ---------------------------------------------------------
@@ -111,6 +112,7 @@ model CustomerProfile {
   walletBalance  Decimal     @default(0.00) @db.Decimal(12, 2)
   deliveries     Delivery[]  @relation("CustomerDeliveries")
   walletTxns     WalletTxn[]
+  payments       Payment[]
 }
 
 model RiderProfile {
@@ -218,14 +220,36 @@ model Delivery {
 // ---------------------------------------------------------
 
 model Payment {
-  id             String        @id @default(uuid())
-  deliveryId     String        @unique
-  delivery       Delivery      @relation(fields: [deliveryId], references: [id])
-  amount         Decimal       @db.Decimal(10, 2)
-  paymentMethod  String        @default("wallet") // wallet | card | mobile_money
-  status         PaymentStatus @default(Pending)
-  transactionRef String?       @unique
-  createdAt      DateTime      @default(now())
+  id                 String           @id @default(uuid())
+  deliveryId         String?          @unique
+  delivery           Delivery?        @relation(fields: [deliveryId], references: [id])
+  customerId         String?
+  customer           CustomerProfile? @relation(fields: [customerId], references: [id])
+  amount             Decimal          @db.Decimal(10, 2)
+  currency           String           @default("GHS")
+  purpose            String           @default("delivery_fee") // delivery_fee | wallet_topup
+  paymentMethod      String           @default("wallet")       // wallet | card | mobile_money
+  status             PaymentStatus    @default(Pending)
+  transactionRef     String?          @unique
+  paystackAccessCode String?
+  metadata           Json?
+  paidAt             DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @default(now()) @updatedAt
+
+  @@index([customerId])
+  @@index([transactionRef])
+  @@index([status])
+}
+
+model PaymentWebhookEvent {
+  id          String   @id @default(uuid())
+  event       String   // e.g. "charge.success"
+  reference   String   @unique // Dedupes webhooks for idempotency
+  payload     Json
+  processedAt DateTime @default(now())
+
+  @@index([reference])
 }
 
 model WalletTxn {

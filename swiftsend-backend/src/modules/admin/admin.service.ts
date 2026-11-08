@@ -14,6 +14,17 @@ import { UpdateDeliveryDto } from "./dto/update-delivery.dto.js";
 import { UpdatePaymentDto } from "./dto/update-payment.dto.js";
 import { InviteTeamDto } from "./dto/invite-team.dto.js";
 
+const SAFE_USER_SELECT = {
+  id: true,
+  email: true,
+  phone: true,
+  fullName: true,
+  role: true,
+  status: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
 function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
   if (parts.length === 0 || !parts[0]) return "U";
@@ -298,11 +309,19 @@ export class AdminService {
     return safeUser;
   }
 
-  async updateUserStatus(id: string, dto: UpdateUserStatusDto) {
+  async updateUserStatus(id: string, dto: UpdateUserStatusDto, currentAdminId?: string) {
+    if (currentAdminId && id === currentAdminId && dto.status === "Suspended") {
+      throw new BadRequestException("Cannot suspend your own admin account");
+    }
+
     const user = await this.prisma.user.update({
       where: { id },
       data: { status: dto.status },
     });
+
+    if (dto.status === "Suspended") {
+      await this.prisma.refreshToken.deleteMany({ where: { userId: id } });
+    }
 
     return {
       id: user.id,
@@ -312,7 +331,11 @@ export class AdminService {
     };
   }
 
-  async deleteUser(id: string) {
+  async deleteUser(id: string, currentAdminId?: string) {
+    if (currentAdminId && id === currentAdminId) {
+      throw new BadRequestException("Cannot delete your own admin account");
+    }
+
     await this.prisma.user.delete({
       where: { id },
     });
@@ -372,7 +395,7 @@ export class AdminService {
     const rider = await this.prisma.riderProfile.findUnique({
       where: { id },
       include: {
-        user: true,
+        user: { select: SAFE_USER_SELECT },
         documents: true,
         deliveries: {
           take: 10,
@@ -508,8 +531,8 @@ export class AdminService {
     const delivery = await this.prisma.delivery.findUnique({
       where: { id },
       include: {
-        customer: { include: { user: true } },
-        rider: { include: { user: true } },
+        customer: { include: { user: { select: SAFE_USER_SELECT } } },
+        rider: { include: { user: { select: SAFE_USER_SELECT } } },
         payment: true,
       },
     });
@@ -538,8 +561,8 @@ export class AdminService {
       where: { id },
       data,
       include: {
-        rider: { include: { user: true } },
-        customer: { include: { user: true } },
+        rider: { include: { user: { select: SAFE_USER_SELECT } } },
+        customer: { include: { user: { select: SAFE_USER_SELECT } } },
       },
     });
 
@@ -580,6 +603,9 @@ export class AdminService {
       where,
       orderBy: { createdAt: "desc" },
       include: {
+        customer: {
+          include: { user: true },
+        },
         delivery: {
           include: {
             customer: { include: { user: true } },
@@ -592,9 +618,12 @@ export class AdminService {
     return payments.map((p) => ({
       id: p.id,
       deliveryId: p.deliveryId,
-      trackingNumber: p.delivery.trackingNumber,
-      customerName: p.delivery.customer.user.fullName,
-      riderName: p.delivery.rider?.user.fullName || "Unassigned",
+      trackingNumber: p.delivery?.trackingNumber || "N/A (Wallet Top-up)",
+      customerName:
+        p.customer?.user.fullName ||
+        p.delivery?.customer.user.fullName ||
+        "Customer",
+      riderName: p.delivery?.rider?.user.fullName || "N/A",
       amount: Number(p.amount),
       paymentMethod: p.paymentMethod,
       status: p.status,
@@ -609,8 +638,8 @@ export class AdminService {
       include: {
         delivery: {
           include: {
-            customer: { include: { user: true } },
-            rider: { include: { user: true } },
+            customer: { include: { user: { select: SAFE_USER_SELECT } } },
+            rider: { include: { user: { select: SAFE_USER_SELECT } } },
           },
         },
       },
@@ -691,7 +720,16 @@ export class AdminService {
     };
   }
 
-  async removeTeamMember(id: string) {
+  async removeTeamMember(id: string, currentAdminId?: string) {
+    if (currentAdminId && id === currentAdminId) {
+      throw new BadRequestException("Cannot remove your own admin account");
+    }
+
+    const target = await this.prisma.user.findUnique({ where: { id } });
+    if (!target || target.role !== "admin") {
+      throw new NotFoundException("Admin team member not found");
+    }
+
     const count = await this.prisma.user.count({ where: { role: "admin" } });
     if (count <= 1) {
       throw new BadRequestException("Cannot remove the last remaining admin account");

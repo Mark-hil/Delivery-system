@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   BadRequestException,
 } from "@nestjs/common";
+import { randomInt } from "crypto";
 import { PrismaService } from "../../database/prisma.service.js";
 import { RedisService } from "../../database/redis.service.js";
 import { DispatchGateway } from "../dispatch/dispatch.gateway.js";
@@ -34,15 +35,23 @@ export class RiderService {
       throw new NotFoundException("Rider profile not found");
     }
 
+    if (rider.approvalStatus !== "Approved") {
+      throw new ForbiddenException(
+        `Cannot accept jobs: Your rider account is currently ${rider.approvalStatus}.`
+      );
+    }
+
     // Document Validation Compliance Check
-    const hasExpiredRequiredDoc = rider.documents.some((d) => {
-      if (!d.required || !d.expiresAt) return false;
-      return new Date(d.expiresAt) <= new Date();
+    const hasInvalidRequiredDoc = rider.documents.some((d) => {
+      if (!d.required) return false;
+      if (!d.isVerified) return true;
+      if (d.expiresAt && new Date(d.expiresAt) <= new Date()) return true;
+      return false;
     });
 
-    if (hasExpiredRequiredDoc) {
+    if (hasInvalidRequiredDoc) {
       throw new ForbiddenException(
-        "Cannot accept jobs: Required documents have expired. Please complete document validation."
+        "Cannot accept jobs: Required documents are unverified or have expired. Please complete document validation."
       );
     }
 
@@ -109,12 +118,30 @@ export class RiderService {
       throw new ForbiddenException("This delivery is not assigned to you");
     }
 
-    const updated = await this.prisma.delivery.update({
-      where: { id: deliveryId },
+    if (delivery.status !== "accepted" && delivery.status !== "arriving") {
+      throw new BadRequestException(
+        `Cannot confirm pickup for delivery in '${delivery.status}' state`
+      );
+    }
+
+    const pickupUpdate = await this.prisma.delivery.updateMany({
+      where: {
+        id: deliveryId,
+        riderId: rider.id,
+        status: { in: ["accepted", "arriving"] },
+      },
       data: {
         status: "pickedUp",
         pickedUpAt: new Date(),
       },
+    });
+
+    if (pickupUpdate.count === 0) {
+      throw new ConflictException("Delivery pickup was already confirmed or state changed");
+    }
+
+    const updated = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
       include: {
         rider: {
           include: {
@@ -148,6 +175,7 @@ export class RiderService {
       where: { id: deliveryId },
       include: {
         customer: true,
+        payment: true,
       },
     });
 
@@ -171,9 +199,24 @@ export class RiderService {
       throw new ForbiddenException("This delivery is not assigned to you");
     }
 
+    // Brute-force protection on delivery OTP (max 5 failed attempts per delivery)
+    const attemptsKey = `delivery:otp:attempts:${deliveryId}`;
+    const currentAttempts = Number((await this.redis.client.get(attemptsKey)) || 0);
+    if (currentAttempts >= 5) {
+      throw new ForbiddenException(
+        "Maximum delivery OTP verification attempts exceeded. Please contact support."
+      );
+    }
+
     if (delivery.deliveryOtp.trim() !== otp.trim()) {
+      const nextAttempts = await this.redis.client.incr(attemptsKey);
+      if (nextAttempts === 1) {
+        await this.redis.client.expire(attemptsKey, 3600);
+      }
       throw new BadRequestException("Invalid delivery completion code");
     }
+
+    await this.redis.client.del(attemptsKey);
 
     // Payout calculation: 80% of total fee
     const payout = Math.round(Number(delivery.totalFee) * 0.8 * 10) / 10;
@@ -184,51 +227,80 @@ export class RiderService {
     );
 
     // Execute atomic transaction for delivery completion, earnings, customer wallet deduction, and payment ledger
-    await this.prisma.$transaction([
-      this.prisma.delivery.update({
-        where: { id: deliveryId },
+    await this.prisma.$transaction(async (tx) => {
+      const statusResult = await tx.delivery.updateMany({
+        where: {
+          id: deliveryId,
+          riderId: rider.id,
+          status: { in: ["arriving", "pickedUp", "inTransit"] },
+        },
         data: {
           status: "delivered",
           deliveredAt: new Date(),
         },
-      }),
-      this.prisma.riderEarning.create({
+      });
+
+      if (statusResult.count === 0) {
+        throw new BadRequestException("Delivery is already completed");
+      }
+
+      await tx.riderEarning.create({
         data: {
           riderId: rider.id,
           deliveryId: delivery.id,
           amount: payout,
         },
-      }),
-      this.prisma.riderProfile.update({
+      });
+
+      await tx.riderProfile.update({
         where: { id: rider.id },
         data: {
           trips: { increment: 1 },
         },
-      }),
-      this.prisma.customerProfile.update({
-        where: { id: delivery.customer.id },
-        data: {
-          walletBalance: { decrement: totalFeeNum },
-        },
-      }),
-      this.prisma.walletTxn.create({
-        data: {
-          customerId: delivery.customer.id,
-          label: `Delivery fee (${delivery.trackingNumber})`,
-          amount: -totalFeeNum,
-          balance: newCustomerBalance,
-        },
-      }),
-      this.prisma.payment.create({
-        data: {
-          deliveryId: delivery.id,
-          amount: delivery.totalFee,
-          status: "Paid",
-          paymentMethod: "wallet",
-          transactionRef: `TXN-${Math.floor(100000 + Math.random() * 900000)}`,
-        },
-      }),
-    ]);
+      });
+
+      const alreadyPaidDirectly =
+        delivery.payment && delivery.payment.status === "Paid";
+
+      if (!alreadyPaidDirectly) {
+        await tx.customerProfile.update({
+          where: { id: delivery.customer.id },
+          data: {
+            walletBalance: { decrement: totalFeeNum },
+          },
+        });
+
+        await tx.walletTxn.create({
+          data: {
+            customerId: delivery.customer.id,
+            label: `Delivery fee (${delivery.trackingNumber})`,
+            amount: -totalFeeNum,
+            balance: newCustomerBalance,
+          },
+        });
+
+        if (delivery.payment) {
+          await tx.payment.update({
+            where: { id: delivery.payment.id },
+            data: {
+              status: "Paid",
+              paidAt: new Date(),
+            },
+          });
+        } else {
+          await tx.payment.create({
+            data: {
+              deliveryId: delivery.id,
+              customerId: delivery.customer.id,
+              amount: delivery.totalFee,
+              status: "Paid",
+              paymentMethod: "wallet",
+              transactionRef: `TXN-${randomInt(100000, 1000000)}`,
+            },
+          });
+        }
+      }
+    });
 
     this.dispatchGateway.broadcastDeliveryCompleted(deliveryId, {
       deliveryId,
@@ -323,10 +395,6 @@ export class RiderService {
       throw new NotFoundException("Rider profile not found");
     }
 
-    // Set renewal expiration to +365 days
-    const nextYear = new Date();
-    nextYear.setDate(nextYear.getDate() + 365);
-
     for (const doc of dto.documents) {
       await this.prisma.riderDocument.upsert({
         where: {
@@ -338,8 +406,8 @@ export class RiderService {
         update: {
           uri: doc.uri,
           uploadedAt: new Date(),
-          expiresAt: doc.kind === "others" ? null : nextYear,
-          isVerified: true,
+          isVerified: false,
+          verifiedAt: null,
         },
         create: {
           riderId: rider.id,
@@ -348,11 +416,17 @@ export class RiderService {
           required: doc.required,
           uri: doc.uri,
           uploadedAt: new Date(),
-          expiresAt: doc.kind === "others" ? null : nextYear,
-          isVerified: true,
+          expiresAt: null,
+          isVerified: false,
         },
       });
     }
+
+    // Place rider back into Pending approval until an admin verifies the new documents
+    await this.prisma.riderProfile.update({
+      where: { id: rider.id },
+      data: { approvalStatus: "Pending" },
+    });
 
     const updated = await this.prisma.riderProfile.findUnique({
       where: { id: rider.id },
@@ -407,7 +481,7 @@ export class RiderService {
       riderId: delivery.riderId || undefined,
       riderName: delivery.rider?.user?.fullName || undefined,
       createdAt: delivery.createdAt.toISOString(),
-      deliveryOtp: delivery.deliveryOtp,
+      // Security: Never expose deliveryOtp to riders
     };
   }
 }

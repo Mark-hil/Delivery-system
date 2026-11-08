@@ -4,6 +4,7 @@ import {
   BadRequestException,
   ForbiddenException,
 } from "@nestjs/common";
+import { randomInt } from "crypto";
 import { PrismaService } from "../../database/prisma.service.js";
 import { RedisService } from "../../database/redis.service.js";
 import { SettingsService } from "../settings/settings.service.js";
@@ -12,6 +13,7 @@ import { EstimateDeliveryDto } from "./dto/estimate-delivery.dto.js";
 import { CreateDeliveryDto } from "./dto/create-delivery.dto.js";
 import { RateDeliveryDto } from "./dto/rate-delivery.dto.js";
 import type { CurrentUserPayload } from "../auth/decorators/current-user.decorator.js";
+import { SmsService } from "../sms/sms.service.js";
 
 function haversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
@@ -42,7 +44,8 @@ export class DeliveriesService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly settingsService: SettingsService,
-    private readonly dispatchGateway: DispatchGateway
+    private readonly dispatchGateway: DispatchGateway,
+    private readonly smsService: SmsService,
   ) {}
 
   // ---------------------------------------------------------
@@ -102,6 +105,7 @@ export class DeliveriesService {
   async create(userId: string, dto: CreateDeliveryDto) {
     const customer = await this.prisma.customerProfile.findUnique({
       where: { userId },
+      include: { user: true },
     });
 
     if (!customer) {
@@ -126,16 +130,35 @@ export class DeliveriesService {
     const distanceKm = calculatedEstimate.distanceKm;
     const etaMinutes = calculatedEstimate.etaMinutes;
 
-    // 2. Validate customer wallet balance
-    if (Number(customer.walletBalance) < totalFee) {
-      throw new BadRequestException(
-        `Insufficient wallet balance. Current balance: GHS ${Number(customer.walletBalance).toFixed(2)}, required: GHS ${totalFee.toFixed(2)}`
-      );
+    // 2. Validate customer wallet balance ONLY when paying via SwiftSend Wallet
+    // Customers choosing direct Paystack checkout ("mobile_money" | "card") pay the calculated fare directly
+    const paymentMethod = dto.paymentMethod || "wallet";
+    if (paymentMethod === "wallet") {
+      let reservedTotal = 0;
+      if (this.prisma.delivery.aggregate) {
+        const activeOrders = await this.prisma.delivery.aggregate({
+          where: {
+            customerId: customer.id,
+            status: {
+              in: ["searching", "accepted", "arriving", "pickedUp", "inTransit"],
+            },
+          },
+          _sum: { totalFee: true },
+        });
+        reservedTotal = Number(activeOrders?._sum?.totalFee || 0);
+      }
+
+      const availableBalance = Math.max(0, Number(customer.walletBalance) - reservedTotal);
+      if (availableBalance < totalFee) {
+        throw new BadRequestException(
+          `Insufficient wallet balance. Available balance: GHS ${availableBalance.toFixed(2)}, required: GHS ${totalFee.toFixed(2)}`
+        );
+      }
     }
 
-    // Generate 4-digit Proof-of-Delivery OTP
-    const deliveryOtp = Math.floor(1000 + Math.random() * 9000).toString();
-    const trackingNumber = `SW-${Math.floor(1000 + Math.random() * 9000)}`;
+    // Generate 4-digit Proof-of-Delivery OTP using CSPRNG
+    const deliveryOtp = randomInt(1000, 10000).toString();
+    const trackingNumber = `SW-${randomInt(100000, 1000000)}`;
 
     const delivery = await this.prisma.delivery.create({
       data: {
@@ -171,9 +194,10 @@ export class DeliveriesService {
       },
     });
 
-    const formatted = this.formatDelivery(delivery);
+    const formattedForCustomer = this.formatDelivery(delivery, "customer");
+    const formattedForRider = this.formatDelivery(delivery, "rider");
 
-    // Broadcast new job to nearby online riders via Redis Geo and WebSocket
+    // Broadcast new job to nearby online riders via Redis Geo and WebSocket (without deliveryOtp)
     try {
       const nearby = await this.redis.findNearbyRiders(
         delivery.pickupLatitude,
@@ -181,14 +205,29 @@ export class DeliveriesService {
         25
       );
       this.dispatchGateway.broadcastNewJob(
-        formatted,
+        formattedForRider,
         nearby.map((r) => r.riderId)
       );
     } catch (err) {
       // Non-fatal if broadcast fails
     }
 
-    return formatted;
+    // Dispatch Delivery Verification OTP via Arkesel SMS to the parcel receiver
+    const targetPhone = dto.recipientPhone || customer.user.phone;
+    if (targetPhone) {
+      try {
+        await this.smsService.sendDeliveryReceiverAlert(
+          targetPhone,
+          customer.user.fullName,
+          deliveryOtp,
+          delivery.trackingNumber
+        );
+      } catch (err) {
+        // Non-fatal if SMS dispatch fails
+      }
+    }
+
+    return formattedForCustomer;
   }
 
   // ---------------------------------------------------------
@@ -383,8 +422,11 @@ export class DeliveriesService {
       riderId: delivery.riderId || undefined,
       riderName: delivery.rider?.user?.fullName || undefined,
       createdAt: delivery.createdAt.toISOString(),
-      // Security: Never leak the deliveryOtp to riders! Only customer and admin see it
-      deliveryOtp: userRole === "rider" ? undefined : delivery.deliveryOtp,
+      // Security: Only expose the deliveryOtp to the customer or admin; never to riders
+      deliveryOtp:
+        userRole === "customer" || userRole === "admin"
+          ? delivery.deliveryOtp
+          : undefined,
     };
   }
 

@@ -10,12 +10,14 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly config: ConfigService) {}
 
   onModuleInit() {
-    const host = this.config.get<string>("REDIS_HOST", "localhost");
-    const port = this.config.get<number>("REDIS_PORT", 6379);
+    const host = this.config.get<string>("REDIS_HOST");
+    const port = Number(this.config.get<string>("REDIS_PORT"));
+    const password = this.config.get<string>("REDIS_PASSWORD");
 
     this.client = new Redis({
       host,
       port,
+      ...(password ? { password } : {}),
       maxRetriesPerRequest: 3,
     });
 
@@ -36,9 +38,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   async setOtp(destination: string, purpose: string, code: string, ttlSeconds = 300): Promise<void> {
     const key = `otp:${purpose}:${destination.toLowerCase().trim()}`;
-    const attemptsKey = `otp:attempts:${purpose}:${destination.toLowerCase().trim()}`;
     await this.client.set(key, code, "EX", ttlSeconds);
-    await this.client.del(attemptsKey);
   }
 
   async getOtp(destination: string, purpose: string): Promise<string | null> {

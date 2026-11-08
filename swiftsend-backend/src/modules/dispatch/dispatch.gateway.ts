@@ -29,7 +29,7 @@ export interface JoinDeliveryDto {
 @WebSocketGateway({
   namespace: "/dispatch",
   cors: {
-    origin: "*",
+    origin: process.env.FRONTEND_URL,
     credentials: true,
   },
 })
@@ -66,12 +66,20 @@ export class DispatchGateway
       }
 
       const token = authHeader.replace(/^Bearer\s+/i, "");
-      const secret = this.config.get<string>(
-        "JWT_ACCESS_SECRET",
-        "swiftsend_jwt_access_super_secret_key_2026"
-      );
+      const secret = this.config.getOrThrow<string>("JWT_ACCESS_SECRET");
 
       const payload = await this.jwt.verifyAsync(token, { secret });
+
+      // Verify user exists and is not suspended
+      const dbUser = await this.prisma.user.findUnique({
+        where: { id: payload.sub },
+      });
+      if (!dbUser || dbUser.status === "Suspended") {
+        this.logger.warn(`Suspended or deleted user attempted socket connection: ${client.id}`);
+        client.disconnect(true);
+        return;
+      }
+
       client.data.user = payload;
 
       this.logger.log(
@@ -83,7 +91,7 @@ export class DispatchGateway
         const rider = await this.prisma.riderProfile.findUnique({
           where: { userId: payload.sub },
         });
-        if (rider) {
+        if (rider && rider.approvalStatus === "Approved") {
           client.data.riderId = rider.id;
           client.join(`rider:${rider.id}`);
           this.logger.log(`Rider joined room: rider:${rider.id}`);
@@ -206,11 +214,21 @@ export class DispatchGateway
       timestamp: Date.now(),
     };
 
-    // 2. Broadcast to specific delivery tracking room if on a delivery
+    // 2. Broadcast to specific delivery tracking room ONLY if this rider is assigned to that delivery
     if (data.deliveryId) {
-      this.server
-        .to(`delivery:${data.deliveryId}`)
-        .emit("rider:location_changed", locationEvent);
+      const delivery = await this.prisma.delivery.findUnique({
+        where: { id: data.deliveryId },
+        select: { riderId: true },
+      });
+      if (delivery && delivery.riderId === riderId) {
+        this.server
+          .to(`delivery:${data.deliveryId}`)
+          .emit("rider:location_changed", locationEvent);
+      } else {
+        this.logger.warn(
+          `Rider ${riderId} attempted to stream coords into unassigned delivery ${data.deliveryId}`
+        );
+      }
     }
 
     // 3. Broadcast to Admin real-time monitoring map

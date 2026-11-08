@@ -13,14 +13,19 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: config.get<string>(
-        "JWT_ACCESS_SECRET",
-        "swiftsend_jwt_access_super_secret_key_2026"
-      ),
+      secretOrKey: config.getOrThrow<string>("JWT_ACCESS_SECRET"),
     });
   }
 
-  async validate(payload: { sub: string; email: string; role: "customer" | "rider" | "admin" }) {
+  async validate(payload: {
+    sub: string;
+    email: string;
+    role: "customer" | "rider" | "admin";
+    typ?: string;
+  }) {
+    if (payload.typ === "refresh") {
+      throw new UnauthorizedException("Refresh token cannot be used as an access token");
+    }
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
     });

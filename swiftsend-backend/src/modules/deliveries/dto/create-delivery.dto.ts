@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min } from "class-validator";
+import { IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
 import { VehicleTypeEnum } from "../../auth/dto/rider-register.dto.js";
 
 export enum DeliveryTypeEnum {
@@ -11,31 +11,37 @@ export class CreateDeliveryDto {
   @ApiProperty({ example: "Airport Residential Area, Accra" })
   @IsNotEmpty()
   @IsString()
+  @MaxLength(300)
   pickupAddress: string;
 
   @ApiProperty({ example: "Osu Oxford Street, Accra" })
   @IsNotEmpty()
   @IsString()
+  @MaxLength(300)
   dropoffAddress: string;
 
   @ApiProperty({ example: "Documents" })
   @IsNotEmpty()
   @IsString()
+  @MaxLength(100)
   packageType: string;
 
   @ApiProperty({ example: "Sealed business contract" })
   @IsNotEmpty()
   @IsString()
+  @MaxLength(500)
   packageDescription: string;
 
   @ApiProperty({ example: "0.5 kg" })
   @IsNotEmpty()
   @IsString()
+  @MaxLength(50)
   weight: string;
 
   @ApiPropertyOptional({ example: "Call recipient upon arrival" })
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   instructions?: string;
 
   @ApiProperty({ enum: DeliveryTypeEnum, example: DeliveryTypeEnum.immediate })
@@ -103,4 +109,23 @@ export class CreateDeliveryDto {
   @Min(-180)
   @Max(180)
   dropoffLng?: number;
+
+  @ApiPropertyOptional({ example: "+233244123456" })
+  @IsOptional()
+  @IsString()
+  recipientPhone?: string;
+
+  @ApiPropertyOptional({ example: "Kofi Mensah" })
+  @IsOptional()
+  @IsString()
+  recipientName?: string;
+
+  @ApiPropertyOptional({
+    example: "mobile_money",
+    enum: ["wallet", "mobile_money", "card"],
+    description: "Payment method: wallet (deducted from wallet) or mobile_money/card (direct Paystack checkout)",
+  })
+  @IsOptional()
+  @IsIn(["wallet", "mobile_money", "card"])
+  paymentMethod?: "wallet" | "mobile_money" | "card";
 }

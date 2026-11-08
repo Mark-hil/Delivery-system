@@ -10,10 +10,7 @@ import { DatabaseModule } from "../../database/database.module.js";
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: (config: ConfigService) => ({
-        secret: config.get<string>(
-          "JWT_ACCESS_SECRET",
-          "swiftsend_jwt_access_super_secret_key_2026"
-        ),
+        secret: config.getOrThrow<string>("JWT_ACCESS_SECRET"),
       }),
       inject: [ConfigService],
     }),

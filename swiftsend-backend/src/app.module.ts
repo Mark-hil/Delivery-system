@@ -12,6 +12,8 @@ import { DeliveriesModule } from "./modules/deliveries/deliveries.module.js";
 import { RiderModule } from "./modules/rider/rider.module.js";
 import { DispatchModule } from "./modules/dispatch/dispatch.module.js";
 import { AdminModule } from "./modules/admin/admin.module.js";
+import { SmsModule } from "./modules/sms/sms.module.js";
+import { PaymentsModule } from "./modules/payments/payments.module.js";
 
 @Module({
   imports: [
@@ -25,6 +27,8 @@ import { AdminModule } from "./modules/admin/admin.module.js";
       },
     ]),
     DatabaseModule,
+    SmsModule,
+    PaymentsModule,
     AuthModule,
     UploadsModule,
     SettingsModule,

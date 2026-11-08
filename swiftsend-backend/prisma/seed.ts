@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import * as bcrypt from "bcrypt";
@@ -36,8 +37,10 @@ async function main() {
   });
 
   const saltRounds = 10;
-  const standardPasswordHash = await bcrypt.hash("Password1", saltRounds);
-  const adminPasswordHash = await bcrypt.hash("Admin123", saltRounds);
+  const defaultPassword = process.env.SEED_DEFAULT_PASSWORD || "Password1";
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD || "Admin123";
+  const standardPasswordHash = await bcrypt.hash(defaultPassword, saltRounds);
+  const adminPasswordHash = await bcrypt.hash(adminPassword, saltRounds);
 
   // 2. Seed Customer Account (Ama Owusu)
   const customerUser = await prisma.user.upsert({

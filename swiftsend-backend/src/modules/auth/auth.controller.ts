@@ -28,7 +28,8 @@ export class AuthController {
   }
 
   @Post("customer/register")
-  @ApiOperation({ summary: "Register a new Customer" })
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @ApiOperation({ summary: "Register a new Customer (Rate-limited to 5 req/min)" })
   @ApiResponse({ status: 201, description: "Customer registered successfully" })
   @ApiResponse({ status: 409, description: "Email or phone already taken" })
   async customerRegister(@Body() dto: CustomerRegisterDto) {
@@ -36,8 +37,9 @@ export class AuthController {
   }
 
   @Post("rider/register")
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @ApiOperation({
-    summary: "Register a new Rider with compliance documents and live selfie photo",
+    summary: "Register a new Rider with compliance documents and live selfie photo (Rate-limited to 5 req/min)",
   })
   @ApiResponse({ status: 201, description: "Rider registered successfully" })
   @ApiResponse({ status: 409, description: "Email or phone already taken" })
@@ -65,6 +67,7 @@ export class AuthController {
 
   @Post("password-reset")
   @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @ApiOperation({ summary: "Reset password with verified OTP" })
   @ApiResponse({ status: 200, description: "Password reset successful" })
   @ApiResponse({ status: 400, description: "Invalid or expired OTP code" })
@@ -74,10 +77,19 @@ export class AuthController {
 
   @Post("refresh")
   @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @ApiOperation({ summary: "Refresh access and refresh JWT tokens" })
   @ApiResponse({ status: 200, description: "Tokens refreshed" })
   @ApiResponse({ status: 401, description: "Invalid refresh token" })
   async refreshTokens(@Body() dto: RefreshTokenDto) {
     return this.authService.refreshTokens(dto.refreshToken);
+  }
+
+  @Post("logout")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Revoke refresh token and log out session" })
+  @ApiResponse({ status: 200, description: "Logged out successfully" })
+  async logout(@Body() dto: RefreshTokenDto) {
+    return this.authService.logout(dto.refreshToken);
   }
 }
