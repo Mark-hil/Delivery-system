@@ -36,7 +36,18 @@ export const SearchingRiderPage: React.FC = () => {
         height={220}
         pickupAddress={draft.pickupAddress}
         dropoffAddress={draft.dropoffAddress}
+        pickupCoords={
+          draft.pickupLat != null && draft.pickupLng != null
+            ? { lat: draft.pickupLat, lng: draft.pickupLng }
+            : undefined
+        }
+        dropoffCoords={
+          draft.dropoffLat != null && draft.dropoffLng != null
+            ? { lat: draft.dropoffLat, lng: draft.dropoffLng }
+            : undefined
+        }
         badge="Searching nearby riders…"
+        showNearbyRiders
       />
       <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 30px" }}>
         <div className="pulse-wrap">

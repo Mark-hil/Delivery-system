@@ -1,6 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { MapBlock, MapPin } from "@/components/MapBlock";
+import { MapBlock } from "@/components/MapBlock";
 import { Button } from "@/components/Button";
 import { useRiderJob } from "@/context/RiderJobContext";
 
@@ -11,9 +11,13 @@ export const DeliveryPage: React.FC = () => {
   return (
     <div className="page">
       <div style={{ height: "55%" }}>
-        <MapBlock flat routeColor="var(--blue)">
-          <MapPin color="var(--green)" style={{ top: "40%", left: "45%" }} />
-        </MapBlock>
+        <MapBlock
+          flat
+          routeColor="var(--blue)"
+          pickupAddress={activeJob?.pickupAddress}
+          dropoffAddress={activeJob?.dropoffAddress}
+          animateRider
+        />
       </div>
       <div style={{ padding: 22, flex: 1 }}>
         <Row label="Customer" value={activeJob?.customerName ?? "—"} />

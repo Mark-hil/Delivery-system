@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import { AdminUser, CustomerUser, RiderUser } from "@/types";
 import { storage } from "@/services/storage";
 import { hasExpiredRequiredDocument, scheduleDocumentExpiryReminders } from "@/services/notifications";
-import { LoginResult, logout } from "@/services/mockApi";
+import { hasActiveAuthToken, LoginResult, logout, onAuthExpired } from "@/services/mockApi";
 
 interface Session {
   role: "customer" | "rider" | "admin";
@@ -33,9 +33,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     (async () => {
       const saved = await storage.getJSON<Session>(storage.keys.session);
-      if (saved) setSession(saved);
+      if (saved && hasActiveAuthToken()) {
+        setSession(saved);
+      } else if (saved) {
+        await storage.remove(storage.keys.session);
+      }
       setBooting(false);
     })();
+  }, []);
+
+  useEffect(() => {
+    return onAuthExpired(() => {
+      setSession(null);
+      storage.remove(storage.keys.session);
+    });
   }, []);
 
   const persist = useCallback(async (next: Session | null) => {

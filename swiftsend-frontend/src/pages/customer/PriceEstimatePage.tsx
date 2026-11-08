@@ -24,9 +24,9 @@ export const PriceEstimatePage: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!estimate) fetchEstimate();
+    fetchEstimate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [draft.pickupAddress, draft.dropoffAddress, draft.vehicleType, draft.pickupLat, draft.dropoffLat]);
 
   useEffect(() => {
     if (estimate) {
@@ -91,6 +91,16 @@ export const PriceEstimatePage: React.FC = () => {
           height={175}
           pickupAddress={draft.pickupAddress}
           dropoffAddress={draft.dropoffAddress}
+          pickupCoords={
+            draft.pickupLat != null && draft.pickupLng != null
+              ? { lat: draft.pickupLat, lng: draft.pickupLng }
+              : undefined
+          }
+          dropoffCoords={
+            draft.dropoffLat != null && draft.dropoffLng != null
+              ? { lat: draft.dropoffLat, lng: draft.dropoffLng }
+              : undefined
+          }
           badge={estimate ? `${estimate.distanceKm} km · ${estimate.etaMinutes} min` : undefined}
         />
 

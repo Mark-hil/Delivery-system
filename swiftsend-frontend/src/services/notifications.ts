@@ -10,11 +10,26 @@ import { daysUntil } from "@/utils/formatters";
 let scheduledTimers: number[] = [];
 
 export async function registerForLocalNotifications(): Promise<boolean> {
-  if (!("Notification" in window)) return false;
+  if (typeof window === "undefined" || !("Notification" in window)) return false;
   if (Notification.permission === "granted") return true;
   if (Notification.permission === "denied") return false;
-  const result = await Notification.requestPermission();
-  return result === "granted";
+
+  // Modern browsers require Notification.requestPermission() to be called inside
+  // a short-running user-generated event handler (click / keydown).
+  return new Promise((resolve) => {
+    const requestOnGesture = async () => {
+      window.removeEventListener("pointerdown", requestOnGesture);
+      window.removeEventListener("keydown", requestOnGesture);
+      try {
+        const result = await Notification.requestPermission();
+        resolve(result === "granted");
+      } catch {
+        resolve(false);
+      }
+    };
+    window.addEventListener("pointerdown", requestOnGesture, { once: true, passive: true });
+    window.addEventListener("keydown", requestOnGesture, { once: true, passive: true });
+  });
 }
 
 function notify(title: string, body: string) {

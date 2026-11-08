@@ -561,8 +561,13 @@ a {
   border-radius: 20px;
   overflow: hidden;
   position: relative;
-  background: linear-gradient(180deg, #eaf3ed, #dcebe2);
+  background: #f1f5f9;
   height: 230px;
+}
+
+/* Uber-style clean silver-slate street canvas */
+.map-block .leaflet-tile-pane {
+  filter: grayscale(82%) contrast(106%) brightness(104%);
 }
 
 .map-block.flat {

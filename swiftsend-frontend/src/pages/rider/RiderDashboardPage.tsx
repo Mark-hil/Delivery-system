@@ -1,6 +1,6 @@
 import React, { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { MapBlock, MapPin } from "@/components/MapBlock";
+import { MapBlock } from "@/components/MapBlock";
 import { useAuth } from "@/context/AuthContext";
 import { useRiderJob } from "@/context/RiderJobContext";
 import { RiderUser } from "@/types";
@@ -62,9 +62,7 @@ export const RiderDashboardPage: React.FC = () => {
         </span>
       </button>
 
-      <MapBlock badge="3 requests nearby">
-        <MapPin color="var(--green)" style={{ top: "40%", left: "45%" }} />
-      </MapBlock>
+      <MapBlock badge="3 requests nearby" showRoute={false} showNearbyRiders autoLocateUser />
 
       <p style={{ margin: "0 22px 10px", fontWeight: 600, fontSize: 14.5 }}>New requests</p>
       <button

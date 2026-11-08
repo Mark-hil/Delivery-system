@@ -3,7 +3,9 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Optional,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { randomInt } from "crypto";
 import { PrismaService } from "../../database/prisma.service.js";
 import { RedisService } from "../../database/redis.service.js";
@@ -29,6 +31,51 @@ function haversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: num
   return R * c;
 }
 
+const GHANA_CITY_COORDS: Array<{ keywords: string[]; lat: number; lng: number }> = [
+  { keywords: ["osu", "oxford"], lat: 5.556, lng: -0.1826 },
+  { keywords: ["east legon", "boundary"], lat: 5.6358, lng: -0.1614 },
+  { keywords: ["accra mall", "tetteh quarshie"], lat: 5.6225, lng: -0.1733 },
+  { keywords: ["kotoka", "airport"], lat: 5.6052, lng: -0.1718 },
+  { keywords: ["spintex"], lat: 5.6295, lng: -0.1045 },
+  { keywords: ["madina", "zongo junction"], lat: 5.6784, lng: -0.167 },
+  { keywords: ["legon", "university of ghana"], lat: 5.6506, lng: -0.187 },
+  { keywords: ["circle", "kwame nkrumah", "kaneshie", "lapaz", "achimota", "dansoman", "accra"], lat: 5.5698, lng: -0.2145 },
+  { keywords: ["tema"], lat: 5.6698, lng: -0.0166 },
+  { keywords: ["knust", "tech junction", "ayigya"], lat: 6.6745, lng: -1.5716 },
+  { keywords: ["kejetia", "adum", "kumasi", "asokwa", "bantama", "suame"], lat: 6.698, lng: -1.6231 },
+  { keywords: ["obuasi"], lat: 6.2023, lng: -1.6674 },
+  { keywords: ["takoradi", "market circle", "sekondi"], lat: 4.8975, lng: -1.7592 },
+  { keywords: ["tarkwa", "umat"], lat: 5.3018, lng: -1.9896 },
+  { keywords: ["tamale", "aboabo", "tth"], lat: 9.4034, lng: -0.8424 },
+  { keywords: ["cape coast", "ucc", "elmina"], lat: 5.1155, lng: -1.2909 },
+  { keywords: ["winneba", "uew"], lat: 5.3511, lng: -0.6295 },
+  { keywords: ["kasoa"], lat: 5.5345, lng: -0.4244 },
+  { keywords: ["koforidua", "new juaben"], lat: 6.0941, lng: -0.2591 },
+  { keywords: ["nkawkaw", "kwahu"], lat: 6.5512, lng: -0.7668 },
+  { keywords: ["ho", "uhas"], lat: 6.6108, lng: 0.4713 },
+  { keywords: ["hohoe"], lat: 7.1519, lng: 0.4736 },
+  { keywords: ["sunyani", "uenr"], lat: 7.3399, lng: -2.3268 },
+  { keywords: ["techiman"], lat: 7.5897, lng: -1.9344 },
+  { keywords: ["goaso"], lat: 6.8036, lng: -2.517 },
+  { keywords: ["bolgatanga", "bolga", "bawku", "navrongo"], lat: 10.7856, lng: -0.8514 },
+  { keywords: ["wa", "ubids"], lat: 10.0601, lng: -2.5019 },
+  { keywords: ["sefwi", "wiawso"], lat: 6.2059, lng: -2.4894 },
+  { keywords: ["damongo"], lat: 9.0844, lng: -1.8185 },
+  { keywords: ["dambai"], lat: 8.0686, lng: 0.1792 },
+  { keywords: ["nalerigu", "walewale"], lat: 10.5253, lng: -0.3698 },
+];
+
+function matchGhanaCoordsSync(address: string | undefined): { lat: number; lng: number } | null {
+  if (!address || !address.trim()) return null;
+  const lower = address.toLowerCase();
+  for (const item of GHANA_CITY_COORDS) {
+    if (item.keywords.some((k) => lower.includes(k))) {
+      return { lat: item.lat, lng: item.lng };
+    }
+  }
+  return null;
+}
+
 function stringToSeed(str: string): number {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -46,6 +93,7 @@ export class DeliveriesService {
     private readonly settingsService: SettingsService,
     private readonly dispatchGateway: DispatchGateway,
     private readonly smsService: SmsService,
+    @Optional() private readonly configService?: ConfigService,
   ) {}
 
   // ---------------------------------------------------------
@@ -54,27 +102,106 @@ export class DeliveriesService {
   async estimate(dto: EstimateDeliveryDto) {
     const settings = await this.settingsService.getSettings();
 
-    let distanceKm: number;
+    let distanceKm: number | null = null;
+    let etaMinutes: number | null = null;
+
+    const pickupCoords =
+      dto.pickupLat != null && dto.pickupLng != null
+        ? { lat: dto.pickupLat, lng: dto.pickupLng }
+        : matchGhanaCoordsSync(dto.pickupAddress);
+    const dropoffCoords =
+      dto.dropoffLat != null && dto.dropoffLng != null
+        ? { lat: dto.dropoffLat, lng: dto.dropoffLng }
+        : matchGhanaCoordsSync(dto.dropoffAddress);
+
+    // 1. If GOOGLE_MAPS_SERVER_API_KEY is configured, query Google Distance Matrix API for real road distance & traffic ETA across Ghana
+    const gmapsServerKey = (
+      this.configService?.get<string>("GOOGLE_MAPS_SERVER_API_KEY") ??
+      process.env.GOOGLE_MAPS_SERVER_API_KEY ??
+      ""
+    ).trim();
+
+    if (gmapsServerKey) {
+      try {
+        const origins = pickupCoords
+          ? `${pickupCoords.lat},${pickupCoords.lng}`
+          : `${dto.pickupAddress}, Ghana`;
+        const destinations = dropoffCoords
+          ? `${dropoffCoords.lat},${dropoffCoords.lng}`
+          : `${dto.dropoffAddress}, Ghana`;
+        const url = new URL("https://maps.googleapis.com/maps/api/distancematrix/json");
+        url.searchParams.set("origins", origins);
+        url.searchParams.set("destinations", destinations);
+        url.searchParams.set("mode", "driving");
+        url.searchParams.set("region", "gh");
+        url.searchParams.set("departure_time", "now");
+        url.searchParams.set("key", gmapsServerKey);
+
+        const res = await fetch(url.toString());
+        if (res.ok) {
+          const data = (await res.json()) as any;
+          const element = data?.rows?.[0]?.elements?.[0];
+          if (element?.status === "OK" && element?.distance?.value) {
+            distanceKm = Math.max(1.0, element.distance.value / 1000);
+            const durationSec =
+              element.duration_in_traffic?.value ?? element.duration?.value ?? distanceKm * 168;
+            etaMinutes = Math.max(8, Math.round(durationSec / 60));
+          }
+        }
+      } catch {
+        // Gracefully fall back to OSRM / Haversine calculation below
+      }
+    }
+
+    // 2. Bolt / Yango / Uber-style OSRM road-graph routing across all 16 regions of Ghana
     if (
+      distanceKm == null &&
       dto.pickupLat != null &&
       dto.pickupLng != null &&
       dto.dropoffLat != null &&
       dto.dropoffLng != null
     ) {
-      distanceKm = haversineDistanceKm(
-        dto.pickupLat,
-        dto.pickupLng,
-        dto.dropoffLat,
-        dto.dropoffLng
-      );
-    } else {
-      // Deterministic realistic distance based on address text length/content
-      const seed = stringToSeed(dto.pickupAddress + dto.dropoffAddress);
-      distanceKm = 3.5 + (seed % 105) / 10; // Generates between 3.5 and 14.0 km
+      try {
+        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${dto.pickupLng},${dto.pickupLat};${dto.dropoffLng},${dto.dropoffLng}?overview=false`;
+        const res = await fetch(osrmUrl, { signal: AbortSignal.timeout(2200) });
+        if (res.ok) {
+          const data = (await res.json()) as {
+            routes?: Array<{ distance?: number; duration?: number }>;
+          };
+          const route = data?.routes?.[0];
+          if (route?.distance) {
+            distanceKm = Math.max(1.0, route.distance / 1000);
+            if (route.duration) {
+              etaMinutes = Math.max(8, Math.round(route.duration / 60));
+            }
+          }
+        }
+      } catch {
+        // Fallback to Haversine * 1.25 below if OSRM is unreachable
+      }
+    }
+
+    // 3. Fallback to nationwide Ghana coordinate Haversine * 1.25 (road winding factor) or deterministic address seed
+    if (distanceKm == null) {
+      if (pickupCoords && dropoffCoords) {
+        const straightLineKm = haversineDistanceKm(
+          pickupCoords.lat,
+          pickupCoords.lng,
+          dropoffCoords.lat,
+          dropoffCoords.lng
+        );
+        distanceKm = Math.max(1.2, straightLineKm * 1.25);
+      } else {
+        // Deterministic realistic distance based on address text length/content
+        const seed = stringToSeed(dto.pickupAddress + dto.dropoffAddress);
+        distanceKm = 3.5 + (seed % 105) / 10; // Generates between 3.5 and 14.0 km
+      }
     }
 
     distanceKm = Math.round(distanceKm * 10) / 10;
-    const etaMinutes = Math.max(8, Math.round(distanceKm * 2.8));
+    if (etaMinutes == null) {
+      etaMinutes = Math.max(8, Math.round(distanceKm * 2.8));
+    }
 
     const vehicleMultipliers: Record<string, number> = {
       bike: 1.0,

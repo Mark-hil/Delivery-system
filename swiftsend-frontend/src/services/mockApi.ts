@@ -21,6 +21,14 @@ const API_BASE_URL: string =
 const ACCESS_TOKEN_KEY = "swiftsend_access_token";
 const REFRESH_TOKEN_KEY = "swiftsend_refresh_token";
 const lastVerifiedOtpByDest = new Map<string, string>();
+const authExpiredListeners = new Set<() => void>();
+
+export function onAuthExpired(listener: () => void): () => void {
+  authExpiredListeners.add(listener);
+  return () => {
+    authExpiredListeners.delete(listener);
+  };
+}
 
 function saveTokens(tokens?: { accessToken?: string; refreshToken?: string }) {
   if (!tokens || typeof window === "undefined") return;
@@ -94,6 +102,9 @@ async function apiCall<T>(
         // Ignore refresh network error
       }
     }
+    // Refresh token is missing or rejected (401): clear stale auth tokens and notify AuthContext
+    clearAuthTokens();
+    authExpiredListeners.forEach((cb) => cb());
   }
 
   if (!res.ok) {
@@ -445,16 +456,24 @@ export async function resetPassword(email: string, newPassword: string): Promise
 export async function estimateDelivery(input: {
   pickupAddress: string;
   dropoffAddress: string;
+  pickupLat?: number;
+  pickupLng?: number;
+  dropoffLat?: number;
+  dropoffLng?: number;
   vehicleType: DeliveryRequest["vehicleType"];
 }): Promise<Pick<DeliveryRequest, "distanceKm" | "etaMinutes" | "baseFee" | "distanceFee" | "serviceFee" | "totalFee">> {
-  const res = await apiCall<
-    Pick<DeliveryRequest, "distanceKm" | "etaMinutes" | "baseFee" | "distanceFee" | "serviceFee" | "totalFee">
-  >("/deliveries/estimate", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-  if (res.ok) {
-    return res.data;
+  try {
+    const res = await apiCall<
+      Pick<DeliveryRequest, "distanceKm" | "etaMinutes" | "baseFee" | "distanceFee" | "serviceFee" | "totalFee">
+    >("/deliveries/estimate", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    if (res.ok) {
+      return res.data;
+    }
+  } catch {
+    // Fall back to local calculation below if estimate endpoint fails
   }
 
   await mockDelay(600);
@@ -471,6 +490,10 @@ export async function estimateDelivery(input: {
 
 export async function requestRider(
   draft: Omit<DeliveryRequest, "id" | "status" | "createdAt"> & {
+    pickupLat?: number;
+    pickupLng?: number;
+    dropoffLat?: number;
+    dropoffLng?: number;
     paymentMethod?: "wallet" | "mobile_money" | "card";
   }
 ): Promise<DeliveryRequest> {

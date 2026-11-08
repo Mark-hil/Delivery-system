@@ -25,6 +25,28 @@ function getInitials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+function getGhanaPhoneVariants(input: string): string[] {
+  const clean = input.replace(/[\s-]/g, "");
+  const variants = new Set<string>([input.trim(), clean]);
+  if (/^0\d{9}$/.test(clean)) {
+    variants.add(`233${clean.slice(1)}`);
+    variants.add(`+233${clean.slice(1)}`);
+  } else if (/^233\d{9}$/.test(clean)) {
+    variants.add(`0${clean.slice(3)}`);
+    variants.add(`+${clean}`);
+  } else if (/^\+233\d{9}$/.test(clean)) {
+    variants.add(`0${clean.slice(4)}`);
+    variants.add(clean.slice(1));
+  }
+  return Array.from(variants);
+}
+
+function maskPhone(phone: string): string {
+  const clean = phone.replace(/\s+/g, "");
+  if (clean.length < 7) return clean;
+  return `${clean.slice(0, 3)} *** ${clean.slice(-4)}`;
+}
+
 @Injectable()
 export class AuthService {
   private readonly accessSecret: string;
@@ -292,24 +314,53 @@ export class AuthService {
   // 4. OTP REQUEST & VERIFICATION (Redis Powered)
   // ---------------------------------------------------------
   async requestOtp(dto: RequestOtpDto) {
-    // Generate cryptographically secure 4-digit code
-    const code = randomInt(1000, 10000).toString();
+    const rawDest = dto.destination.trim();
+    let smsDestination = rawDest;
+
+    if (dto.purpose === "resetPassword") {
+      const phoneVariants = getGhanaPhoneVariants(rawDest);
+      const user = await this.prisma.user.findFirst({
+        where: {
+          OR: [
+            { email: rawDest.toLowerCase() },
+            { phone: { in: phoneVariants } },
+          ],
+        },
+      });
+      if (!user) {
+        throw new NotFoundException("No account found with this phone number or email");
+      }
+      smsDestination = user.phone || rawDest;
+    }
+
+    // Generate cryptographically secure 6-digit code matching the frontend 6-digit OTP input
+    const code = randomInt(100000, 1000000).toString();
 
     // Store in Redis with 5 minute TTL (300s)
-    await this.redis.setOtp(dto.destination, dto.purpose, code, 300);
+    await this.redis.setOtp(rawDest, dto.purpose, code, 300);
 
-    // Dispatch SMS via Arkesel Gateway
-    await this.smsService.sendOtp(dto.destination, code, dto.purpose);
+    // Dispatch SMS via Arkesel Gateway to the user's phone number
+    await this.smsService.sendOtp(smsDestination, code, dto.purpose);
 
-    // OTP code is never leaked in the HTTP response payload.
+    const isSandboxDev =
+      this.config.get<string>("NODE_ENV") !== "production" &&
+      this.config.get<string>("ARKESEL_SANDBOX") === "true";
+
     return {
       success: true,
-      message: `Verification code sent to ${dto.destination}`,
+      sent: true,
+      maskedPhone: maskPhone(smsDestination),
+      message: `SMS verification code sent to ${maskPhone(smsDestination)}`,
+      ...(isSandboxDev ? { devCode: code } : {}),
     };
   }
 
   async verifyOtp(dto: VerifyOtpDto) {
     const isValid = await this.redis.verifyAndDeleteOtp(dto.destination, dto.purpose, dto.code);
+    // Keep resetPassword OTP valid for the subsequent /auth/password-reset step (5 min TTL)
+    if (isValid && dto.purpose === "resetPassword") {
+      await this.redis.setOtp(dto.destination, dto.purpose, dto.code.trim(), 300);
+    }
     return {
       verified: isValid,
     };
@@ -319,16 +370,24 @@ export class AuthService {
   // 5. PASSWORD RESET
   // ---------------------------------------------------------
   async resetPassword(dto: ResetPasswordDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { email: dto.email.toLowerCase().trim() },
+    const identifier = dto.email.trim();
+    const phoneVariants = getGhanaPhoneVariants(identifier);
+
+    const user = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: identifier.toLowerCase() },
+          { phone: { in: phoneVariants } },
+        ],
+      },
     });
 
     if (!user) {
-      throw new NotFoundException("No account found with this email");
+      throw new NotFoundException("No account found with this phone number or email");
     }
 
     // Verify OTP code (purpose: resetPassword)
-    const isOtpValid = await this.redis.verifyAndDeleteOtp(dto.email, "resetPassword", dto.otpCode);
+    const isOtpValid = await this.redis.verifyAndDeleteOtp(identifier, "resetPassword", dto.otpCode);
     if (!isOtpValid) {
       throw new BadRequestException("Invalid or expired verification code");
     }

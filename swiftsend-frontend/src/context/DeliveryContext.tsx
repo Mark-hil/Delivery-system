@@ -1,10 +1,15 @@
-import React, { createContext, useCallback, useContext, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { DeliveryRequest } from "@/types";
 import * as api from "@/services/mockApi";
+import { detectUserLocationInGhana } from "@/services/geoService";
 
 export interface DeliveryDraft {
   pickupAddress: string;
   dropoffAddress: string;
+  pickupLat?: number;
+  pickupLng?: number;
+  dropoffLat?: number;
+  dropoffLng?: number;
   packageType: string;
   packageDescription: string;
   weight: string;
@@ -47,6 +52,28 @@ export const DeliveryProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [loadingEstimate, setLoadingEstimate] = useState(false);
   const [loadingMatch, setLoadingMatch] = useState(false);
 
+  // Live Device GPS Auto-Detection on startup
+  useEffect(() => {
+    let cancelled = false;
+    detectUserLocationInGhana().then((loc) => {
+      if (cancelled || !loc) return;
+      setDraftState((prev) => {
+        if (prev.pickupAddress !== defaultDraft.pickupAddress || prev.pickupLat != null) {
+          return prev;
+        }
+        return {
+          ...prev,
+          pickupAddress: loc.address,
+          pickupLat: loc.lat,
+          pickupLng: loc.lng,
+        };
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const setDraft = useCallback((d: Partial<DeliveryDraft>) => {
     setDraftState((prev) => ({ ...prev, ...d }));
   }, []);
@@ -57,6 +84,10 @@ export const DeliveryProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const result = await api.estimateDelivery({
         pickupAddress: draft.pickupAddress,
         dropoffAddress: draft.dropoffAddress,
+        pickupLat: draft.pickupLat,
+        pickupLng: draft.pickupLng,
+        dropoffLat: draft.dropoffLat,
+        dropoffLng: draft.dropoffLng,
         vehicleType: draft.vehicleType,
       });
       setEstimate(result);

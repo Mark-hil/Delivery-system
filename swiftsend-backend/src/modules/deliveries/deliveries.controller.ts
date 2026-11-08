@@ -25,8 +25,6 @@ export class DeliveriesController {
   constructor(private readonly deliveriesService: DeliveriesService) {}
 
   @Post("deliveries/estimate")
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth("access-token")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: "Estimate delivery fare and ETA",

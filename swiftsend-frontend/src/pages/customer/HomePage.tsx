@@ -1,6 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { MapBlock, MapPin } from "@/components/MapBlock";
+import { MapBlock } from "@/components/MapBlock";
 import { SectionTitle, StatusBadge } from "@/components/Primitives";
 import { useAuth } from "@/context/AuthContext";
 import { CustomerUser } from "@/types";
@@ -53,10 +53,7 @@ export const HomePage: React.FC = () => {
         </span>
       </button>
 
-      <MapBlock badge="● 6 riders nearby">
-        <MapPin color="var(--blue)" style={{ bottom: "34%", left: "30%" }} />
-        <MapPin color="var(--green)" style={{ top: "26%", left: "58%" }} />
-      </MapBlock>
+      <MapBlock badge="● 6 riders nearby" showRoute={false} showNearbyRiders autoLocateUser />
 
       <div style={{ display: "flex", gap: 10, padding: "0 22px" }}>
         {quickActions.map((q) => (

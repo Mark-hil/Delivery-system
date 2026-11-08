@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { MapBlock, MapPin } from "@/components/MapBlock";
+import { MapBlock } from "@/components/MapBlock";
 import { StatusBadge } from "@/components/Primitives";
 import { useDelivery } from "@/context/DeliveryContext";
 import { useUI } from "@/context/UIContext";
@@ -32,10 +32,18 @@ export const LiveTrackingPage: React.FC = () => {
           routeColor="var(--blue)"
           pickupAddress={draft.pickupAddress}
           dropoffAddress={draft.dropoffAddress}
-        >
-          <MapPin color="var(--blue)" style={{ bottom: "34%", left: "30%" }} />
-          <MapPin color="var(--green)" style={{ top: "26%", left: "58%" }} />
-        </MapBlock>
+          pickupCoords={
+            draft.pickupLat != null && draft.pickupLng != null
+              ? { lat: draft.pickupLat, lng: draft.pickupLng }
+              : undefined
+          }
+          dropoffCoords={
+            draft.dropoffLat != null && draft.dropoffLng != null
+              ? { lat: draft.dropoffLat, lng: draft.dropoffLng }
+              : undefined
+          }
+          animateRider
+        />
 
         <div
           style={{
