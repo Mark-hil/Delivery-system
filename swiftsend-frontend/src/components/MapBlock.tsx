@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { loadGoogleMaps, onGoogleMapsAuthFailure } from "@/services/googleMaps";
 import {
   Coords,
+  buildInstantRoadPreview,
   detectUserLocationInGhana,
   fetchOsrmRoute,
   geocodeGhanaAddress,
@@ -9,6 +10,8 @@ import {
   resolveSyncGhanaCoords,
   reverseGeocodeGhana,
 } from "@/services/geoService";
+
+export type MapNavigationMode = "preview" | "to_pickup" | "to_dropoff";
 
 interface Props {
   routeColor?: string;
@@ -19,6 +22,8 @@ interface Props {
   dropoffAddress?: string;
   pickupCoords?: Coords;
   dropoffCoords?: Coords;
+  riderCoords?: Coords;
+  navigationMode?: MapNavigationMode;
   showRoute?: boolean;
   interactivePins?: boolean;
   showNearbyRiders?: boolean;
@@ -31,11 +36,15 @@ interface Props {
 
 export const resolveAccraCoords = resolveSyncGhanaCoords;
 
+// Google Maps signature navigation blue palette
+const GOOGLE_BLUE_CORE = "#4285F4";
+const GOOGLE_BLUE_BORDER = "#185ABC";
+
 function resolveCssColor(color: string): string {
   if (!color.startsWith("var(")) return color;
-  if (color.includes("--blue")) return "#111827";
+  if (color.includes("--blue")) return GOOGLE_BLUE_CORE;
   if (color.includes("--green")) return "#16A34A";
-  return "#111827";
+  return GOOGLE_BLUE_CORE;
 }
 
 // Strict Ghana bounding box so the map never pans or zooms out to other countries
@@ -45,7 +54,7 @@ const GHANA_BOUNDS: [[number, number], [number, number]] = [
 ];
 
 export const MapBlock: React.FC<Props> = ({
-  routeColor = "#111827",
+  routeColor = GOOGLE_BLUE_CORE,
   badge,
   height,
   flat,
@@ -53,6 +62,8 @@ export const MapBlock: React.FC<Props> = ({
   dropoffAddress,
   pickupCoords,
   dropoffCoords,
+  riderCoords,
+  navigationMode = "preview",
   showRoute = true,
   interactivePins = false,
   showNearbyRiders = false,
@@ -74,7 +85,11 @@ export const MapBlock: React.FC<Props> = ({
 
   const cachedDevice = getCachedDeviceLocation();
   const defaultPickupFallback = cachedDevice
-    ? { lat: cachedDevice.lat, lng: cachedDevice.lng, label: cachedDevice.address.split(",")[0] || "Current Location" }
+    ? {
+        lat: cachedDevice.lat,
+        lng: cachedDevice.lng,
+        label: cachedDevice.address.split(",")[0] || "Current Location",
+      }
     : { lat: 5.556, lng: -0.1826, label: "12 Oxford St, Osu" };
 
   const [pickup, setPickup] = useState(() =>
@@ -180,6 +195,12 @@ export const MapBlock: React.FC<Props> = ({
       }
     };
 
+    // Rider approach origin when navigationMode === "to_pickup" (~1.3 km away from pickup)
+    const computedRiderOrigin: Coords = riderCoords ?? {
+      lat: Number((pickup.lat - 0.0095).toFixed(6)),
+      lng: Number((pickup.lng - 0.0082).toFixed(6)),
+    };
+
     const initUberStyleLeafletMap = async () => {
       if (cancelled || !mapContainerRef.current) return;
       cleanupMaps();
@@ -191,6 +212,7 @@ export const MapBlock: React.FC<Props> = ({
         zoomControl: false,
         attributionControl: false,
         scrollWheelZoom: false,
+        preferCanvas: true,
         minZoom: 12,
         maxZoom: 18,
         maxBounds: GHANA_BOUNDS,
@@ -202,24 +224,28 @@ export const MapBlock: React.FC<Props> = ({
         maxZoom: 19,
       }).addTo(map);
 
-      // Uber-style Pickup Marker: Black circle with white center + floating white address pill
+      const activeCoreColor = resolveCssColor(routeColor);
+      const activeBorderColor =
+        activeCoreColor === GOOGLE_BLUE_CORE ? GOOGLE_BLUE_BORDER : "#0F172A";
+
+      // Pickup Marker: Green/Black circle with floating address pill
       const pickupIcon = L.divIcon({
         className: "swiftsend-leaflet-pin",
         html: `<div style="display:flex;align-items:center;gap:6px;transform:translate(-11px,-11px);cursor:${
           interactivePins ? "grab" : "pointer"
         };">
           <div style="width:20px;height:20px;border-radius:50%;background:#111827;border:2.5px solid #FFFFFF;box-shadow:0 3px 10px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;">
-            <div style="width:6px;height:6px;border-radius:50%;background:#16A34A;"></div>
+            <div style="width:7px;height:7px;border-radius:50%;background:#16A34A;"></div>
           </div>
           <div style="display:flex;align-items:center;background:#FFFFFF;color:#111827;font-size:10.5px;font-weight:700;padding:3px 8px;border-radius:6px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.18);border:1px solid rgba(15,23,42,0.08);">
             <span style="width:6px;height:6px;border-radius:50%;background:#16A34A;margin-right:5px;"></span>
-            <span>${pickup.label}</span>
+            <span>Pickup · ${pickup.label}</span>
           </div>
         </div>`,
         iconSize: [22, 22],
       });
 
-      // Uber-style Drop-off Marker: Square stop pin + floating dark address pill
+      // Drop-off Marker: Square stop pin + floating dark address pill
       const dropoffIcon = L.divIcon({
         className: "swiftsend-leaflet-pin",
         html: `<div style="display:flex;align-items:center;gap:6px;transform:translate(-11px,-11px);cursor:${
@@ -229,7 +255,7 @@ export const MapBlock: React.FC<Props> = ({
             <div style="width:6px;height:6px;background:#FFFFFF;"></div>
           </div>
           <div style="display:flex;align-items:center;background:#111827;color:#FFFFFF;font-size:10.5px;font-weight:700;padding:3px 8px;border-radius:6px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.24);">
-            <span>${dropoff.label}</span>
+            <span>Drop-off · ${dropoff.label}</span>
           </div>
         </div>`,
         iconSize: [22, 22],
@@ -269,88 +295,237 @@ export const MapBlock: React.FC<Props> = ({
         });
       }
 
-      // Helper to frame route at street level without zooming out to a regional/country view
-      const frameUberCamera = (boundsObj: any) => {
-        const distDeg = Math.hypot(dropoff.lat - pickup.lat, dropoff.lng - pickup.lng);
-        // If pickup and dropoff are within ~30 km, fit both at street level (zoom 12..15)
+      const frameCamera = (boundsObj: any, fallbackCenter: Coords) => {
+        const sw = boundsObj.getSouthWest?.();
+        const ne = boundsObj.getNorthEast?.();
+        const distDeg =
+          sw && ne ? Math.hypot(ne.lat - sw.lat, ne.lng - sw.lng) : 0.05;
         if (distDeg <= 0.28) {
-          map.fitBounds(boundsObj, { padding: [36, 48], maxZoom: 15 });
+          map.fitBounds(boundsObj, { padding: [40, 52], maxZoom: 15 });
         } else {
-          // For inter-city trips across Ghana, stay zoomed in at street level around the pickup neighborhood
-          map.setView([pickup.lat, pickup.lng], 13);
+          map.setView([fallbackCenter.lat, fallbackCenter.lng], 13);
         }
       };
 
       if (showRoute) {
-        const dropoffMarker = L.marker([dropoff.lat, dropoff.lng], {
-          icon: dropoffIcon,
-          draggable: interactivePins,
-        }).addTo(map);
+        // Always Stage 1 ("to_pickup"): Rider -> Pickup is the primary Google Maps Blue direction line
+        if (navigationMode === "to_pickup") {
+          // Optional subtle dashed preview line from Pickup -> Dropoff so destination stays visible
+          L.marker([dropoff.lat, dropoff.lng], {
+            icon: dropoffIcon,
+            draggable: false,
+            opacity: 0.75,
+          }).addTo(map);
 
-        if (interactivePins) {
-          dropoffMarker.on("dragend", async () => {
-            const pos = dropoffMarker.getLatLng();
-            const addr = await reverseGeocodeGhana(pos.lat, pos.lng);
-            onDropoffChangeRef.current?.({
-              address: addr,
-              lat: Number(pos.lat.toFixed(6)),
-              lng: Number(pos.lng.toFixed(6)),
-            });
+          const approachBounds = L.latLngBounds([
+            [computedRiderOrigin.lat, computedRiderOrigin.lng],
+            [pickup.lat, pickup.lng],
+          ]);
+          frameCamera(approachBounds, pickup);
+
+          // Render instant Google Maps Blue road line immediately (0ms delay), then refine with OSRM
+          let coords: [number, number][] = buildInstantRoadPreview(computedRiderOrigin, {
+            lat: pickup.lat,
+            lng: pickup.lng,
           });
-        }
 
-        const initialBounds = L.latLngBounds([
-          [pickup.lat, pickup.lng],
-          [dropoff.lat, dropoff.lng],
-        ]);
-        frameUberCamera(initialBounds);
+          // Traversed trail behind rider (soft slate gray)
+          const traversedLine = L.polyline([coords[0]], {
+            color: "#94A3B8",
+            weight: 5,
+            opacity: 0.65,
+            lineCap: "round",
+            lineJoin: "round",
+          }).addTo(map);
 
-        const osrm = await fetchOsrmRoute(
-          { lat: pickup.lat, lng: pickup.lng },
-          { lat: dropoff.lat, lng: dropoff.lng }
-        );
-        if (cancelled || !leafletInstanceRef.current) return;
+          // Google Maps Blue outer road border (#185ABC)
+          const blueBorderLine = L.polyline(coords, {
+            color: activeBorderColor,
+            weight: 9,
+            opacity: 0.95,
+            lineCap: "round",
+            lineJoin: "round",
+          }).addTo(map);
 
-        // Uber signature bold dark route line with subtle outer halo
-        L.polyline(osrm.coordinates, {
-          color: "#FFFFFF",
-          weight: 7,
-          opacity: 0.75,
-          lineCap: "round",
-          lineJoin: "round",
-        }).addTo(map);
+          // Google Maps Blue inner direction line (#4285F4)
+          const blueCoreLine = L.polyline(coords, {
+            color: activeCoreColor,
+            weight: 6,
+            opacity: 1,
+            lineCap: "round",
+            lineJoin: "round",
+          }).addTo(map);
 
-        const routeLine = L.polyline(osrm.coordinates, {
-          color: resolveCssColor(routeColor),
-          weight: 4.5,
-          opacity: 0.98,
-          lineCap: "round",
-          lineJoin: "round",
-        }).addTo(map);
-
-        frameUberCamera(routeLine.getBounds());
-
-        if (animateRider && osrm.coordinates.length >= 2) {
-          let stepIdx = Math.floor(osrm.coordinates.length * 0.2);
-          const liveRiderIcon = L.divIcon({
+          // Live Rider Marker heading to Pickup
+          let stepIdx = 0;
+          const riderComingIcon = L.divIcon({
             className: "swiftsend-live-rider",
-            html: `<div style="display:flex;align-items:center;gap:4px;transform:translate(-16px,-16px);">
-              <div style="width:32px;height:32px;border-radius:50%;background:#111827;border:2.5px solid #16A34A;box-shadow:0 4px 12px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;font-size:16px;">🏍</div>
-              <span style="background:#16A34A;color:#fff;font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:999px;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,0.2);">LIVE</span>
+            html: `<div style="display:flex;align-items:center;gap:5px;transform:translate(-17px,-17px);">
+              <div style="width:34px;height:34px;border-radius:50%;background:${GOOGLE_BLUE_CORE};border:2.5px solid #FFFFFF;box-shadow:0 4px 14px rgba(26,115,232,0.55);display:flex;align-items:center;justify-content:center;font-size:16px;">🏍</div>
+              <span style="background:${GOOGLE_BLUE_BORDER};color:#fff;font-size:9.5px;font-weight:700;padding:2.5px 7px;border-radius:999px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.25);">COMING TO PICKUP</span>
             </div>`,
-            iconSize: [32, 32],
+            iconSize: [34, 34],
           });
 
-          const liveMarker = L.marker(osrm.coordinates[stepIdx], {
-            icon: liveRiderIcon,
+          const liveMarker = L.marker(coords[0], {
+            icon: riderComingIcon,
             zIndexOffset: 1000,
           }).addTo(map);
 
-          riderInterval = setInterval(() => {
-            if (cancelled) return;
-            stepIdx = (stepIdx + 1) % osrm.coordinates.length;
-            liveMarker.setLatLng(osrm.coordinates[stepIdx]);
-          }, 850);
+          if (animateRider && coords.length >= 2) {
+            riderInterval = setInterval(() => {
+              if (cancelled || coords.length < 2) return;
+              stepIdx = (stepIdx + 1) % coords.length;
+              liveMarker.setLatLng(coords[stepIdx]);
+              traversedLine.setLatLngs(coords.slice(0, stepIdx + 1));
+              const remaining = coords.slice(stepIdx);
+              if (remaining.length >= 2) {
+                blueBorderLine.setLatLngs(remaining);
+                blueCoreLine.setLatLngs(remaining);
+              } else {
+                blueBorderLine.setLatLngs(coords);
+                blueCoreLine.setLatLngs(coords);
+              }
+            }, 800);
+          }
+
+          // Upgrade to exact OSRM street geometry asynchronously
+          fetchOsrmRoute(computedRiderOrigin, {
+            lat: pickup.lat,
+            lng: pickup.lng,
+          }).then((riderToPickupRoute) => {
+            if (cancelled || !leafletInstanceRef.current) return;
+            coords = riderToPickupRoute.coordinates;
+            stepIdx = 0;
+            liveMarker.setLatLng(coords[0]);
+            traversedLine.setLatLngs([coords[0]]);
+            blueBorderLine.setLatLngs(coords);
+            blueCoreLine.setLatLngs(coords);
+            frameCamera(blueCoreLine.getBounds(), pickup);
+          });
+
+          // Also fetch subtle dashed preview of Pickup -> Drop-off in background
+          fetchOsrmRoute(
+            { lat: pickup.lat, lng: pickup.lng },
+            { lat: dropoff.lat, lng: dropoff.lng }
+          ).then((deliveryPreview) => {
+            if (cancelled || !leafletInstanceRef.current) return;
+            L.polyline(deliveryPreview.coordinates, {
+              color: "#64748B",
+              weight: 3.5,
+              opacity: 0.45,
+              dashArray: "6, 8",
+              lineCap: "round",
+            }).addTo(map);
+          });
+        } else {
+          // Stage 2 ("to_dropoff") or "preview": Pickup -> Drop-off Google Maps Blue direction line
+          const dropoffMarker = L.marker([dropoff.lat, dropoff.lng], {
+            icon: dropoffIcon,
+            draggable: interactivePins,
+          }).addTo(map);
+
+          if (interactivePins) {
+            dropoffMarker.on("dragend", async () => {
+              const pos = dropoffMarker.getLatLng();
+              const addr = await reverseGeocodeGhana(pos.lat, pos.lng);
+              onDropoffChangeRef.current?.({
+                address: addr,
+                lat: Number(pos.lat.toFixed(6)),
+                lng: Number(pos.lng.toFixed(6)),
+              });
+            });
+          }
+
+          const initialBounds = L.latLngBounds([
+            [pickup.lat, pickup.lng],
+            [dropoff.lat, dropoff.lng],
+          ]);
+          frameCamera(initialBounds, pickup);
+
+          // Render instant Google Maps Blue road line immediately (0ms delay), then refine with OSRM
+          let coords: [number, number][] = buildInstantRoadPreview(
+            { lat: pickup.lat, lng: pickup.lng },
+            { lat: dropoff.lat, lng: dropoff.lng }
+          );
+
+          // Traversed line behind rider when animating delivery
+          const traversedLine = L.polyline([coords[0]], {
+            color: "#94A3B8",
+            weight: 5,
+            opacity: 0.65,
+            lineCap: "round",
+            lineJoin: "round",
+          }).addTo(map);
+
+          // Google Maps Blue outer casing (#185ABC)
+          const blueBorderLine = L.polyline(coords, {
+            color: activeBorderColor,
+            weight: 9,
+            opacity: 0.95,
+            lineCap: "round",
+            lineJoin: "round",
+          }).addTo(map);
+
+          // Google Maps Blue inner direction line (#4285F4)
+          const blueCoreLine = L.polyline(coords, {
+            color: activeCoreColor,
+            weight: 6,
+            opacity: 1,
+            lineCap: "round",
+            lineJoin: "round",
+          }).addTo(map);
+
+          let stepIdx = Math.min(1, coords.length - 1);
+          let liveMarker: any = null;
+
+          if ((animateRider || navigationMode === "to_dropoff") && coords.length >= 2) {
+            const liveRiderIcon = L.divIcon({
+              className: "swiftsend-live-rider",
+              html: `<div style="display:flex;align-items:center;gap:5px;transform:translate(-17px,-17px);">
+                <div style="width:34px;height:34px;border-radius:50%;background:${GOOGLE_BLUE_CORE};border:2.5px solid #FFFFFF;box-shadow:0 4px 14px rgba(26,115,232,0.55);display:flex;align-items:center;justify-content:center;font-size:16px;">🏍</div>
+                <span style="background:#16A34A;color:#fff;font-size:9.5px;font-weight:700;padding:2.5px 7px;border-radius:999px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.25);">DELIVERING</span>
+              </div>`,
+              iconSize: [34, 34],
+            });
+
+            liveMarker = L.marker(coords[stepIdx], {
+              icon: liveRiderIcon,
+              zIndexOffset: 1000,
+            }).addTo(map);
+
+            if (animateRider) {
+              riderInterval = setInterval(() => {
+                if (cancelled || coords.length < 2) return;
+                stepIdx = (stepIdx + 1) % coords.length;
+                liveMarker?.setLatLng(coords[stepIdx]);
+                traversedLine.setLatLngs(coords.slice(0, stepIdx + 1));
+                const remaining = coords.slice(stepIdx);
+                if (remaining.length >= 2) {
+                  blueBorderLine.setLatLngs(remaining);
+                  blueCoreLine.setLatLngs(remaining);
+                } else {
+                  blueBorderLine.setLatLngs(coords);
+                  blueCoreLine.setLatLngs(coords);
+                }
+              }, 800);
+            }
+          }
+
+          // Upgrade to exact OSRM street geometry asynchronously
+          fetchOsrmRoute(
+            { lat: pickup.lat, lng: pickup.lng },
+            { lat: dropoff.lat, lng: dropoff.lng }
+          ).then((osrm) => {
+            if (cancelled || !leafletInstanceRef.current) return;
+            coords = osrm.coordinates;
+            stepIdx = Math.min(1, coords.length - 1);
+            liveMarker?.setLatLng(coords[stepIdx]);
+            traversedLine.setLatLngs([coords[0]]);
+            blueBorderLine.setLatLngs(coords);
+            blueCoreLine.setLatLngs(coords);
+            frameCamera(blueCoreLine.getBounds(), pickup);
+          });
         }
       } else {
         map.setView([pickup.lat, pickup.lng], 14);
@@ -361,6 +536,11 @@ export const MapBlock: React.FC<Props> = ({
           map.invalidateSize();
         }
       }, 100);
+      setTimeout(() => {
+        if (!cancelled && leafletInstanceRef.current) {
+          map.invalidateSize();
+        }
+      }, 350);
     };
 
     const initGoogleMap = (gmaps: any) => {
@@ -385,17 +565,6 @@ export const MapBlock: React.FC<Props> = ({
         disableDefaultUI: true,
         zoomControl: true,
         gestureHandling: "cooperative",
-        styles: [
-          {
-            featureType: "all",
-            elementType: "geometry",
-            stylers: [{ saturation: -75 }, { lightness: 10 }],
-          },
-          {
-            featureType: "poi.business",
-            stylers: [{ visibility: "off" }],
-          },
-        ],
       });
       googleMapInstanceRef.current = map;
 
@@ -407,7 +576,7 @@ export const MapBlock: React.FC<Props> = ({
         icon: {
           path: gmaps.SymbolPath.CIRCLE,
           scale: 8,
-          fillColor: "#111827",
+          fillColor: "#16A34A",
           fillOpacity: 1,
           strokeColor: "#FFFFFF",
           strokeWeight: 3,
@@ -426,22 +595,31 @@ export const MapBlock: React.FC<Props> = ({
       }
 
       if (showRoute) {
+        const routeOrigin =
+          navigationMode === "to_pickup"
+            ? computedRiderOrigin
+            : { lat: pickup.lat, lng: pickup.lng };
+        const routeDestination =
+          navigationMode === "to_pickup"
+            ? { lat: pickup.lat, lng: pickup.lng }
+            : { lat: dropoff.lat, lng: dropoff.lng };
+
         const dropoffMarker = new gmaps.Marker({
           position: { lat: dropoff.lat, lng: dropoff.lng },
           map,
-          draggable: interactivePins,
+          draggable: interactivePins && navigationMode !== "to_pickup",
           title: `Drop-off: ${dropoff.label}`,
           icon: {
             path: gmaps.SymbolPath.CIRCLE,
             scale: 8,
-            fillColor: "#16A34A",
+            fillColor: "#111827",
             fillOpacity: 1,
             strokeColor: "#FFFFFF",
             strokeWeight: 3,
           },
         });
 
-        if (interactivePins) {
+        if (interactivePins && navigationMode !== "to_pickup") {
           dropoffMarker.addListener("dragend", async (ev: any) => {
             const lat = ev?.latLng?.lat?.();
             const lng = ev?.latLng?.lng?.();
@@ -458,15 +636,15 @@ export const MapBlock: React.FC<Props> = ({
           suppressMarkers: true,
           polylineOptions: {
             strokeColor: strokeHex,
-            strokeWeight: 5,
+            strokeWeight: 6,
             strokeOpacity: 0.95,
           },
         });
 
         directionsService.route(
           {
-            origin: { lat: pickup.lat, lng: pickup.lng },
-            destination: { lat: dropoff.lat, lng: dropoff.lng },
+            origin: routeOrigin,
+            destination: routeDestination,
             travelMode: gmaps.TravelMode.DRIVING,
             region: "GH",
           },
@@ -475,17 +653,14 @@ export const MapBlock: React.FC<Props> = ({
             if (status === "OK" && result) {
               directionsRenderer.setDirections(result);
             } else {
-              fetchOsrmRoute(
-                { lat: pickup.lat, lng: pickup.lng },
-                { lat: dropoff.lat, lng: dropoff.lng }
-              ).then((osrm) => {
+              fetchOsrmRoute(routeOrigin, routeDestination).then((osrm) => {
                 if (cancelled) return;
                 new gmaps.Polyline({
                   path: osrm.coordinates.map(([lat, lng]) => ({ lat, lng })),
                   geodesic: true,
                   strokeColor: strokeHex,
                   strokeOpacity: 0.95,
-                  strokeWeight: 4.5,
+                  strokeWeight: 5.5,
                   map,
                 });
               });
@@ -508,8 +683,19 @@ export const MapBlock: React.FC<Props> = ({
       });
     }
 
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            if (!cancelled && leafletInstanceRef.current) {
+              leafletInstanceRef.current.invalidateSize();
+            }
+          })
+        : null;
+    resizeObserver?.observe(container);
+
     return () => {
       cancelled = true;
+      resizeObserver?.disconnect();
       cleanupMaps();
     };
   }, [
@@ -519,6 +705,9 @@ export const MapBlock: React.FC<Props> = ({
     dropoff.lat,
     dropoff.lng,
     dropoff.label,
+    riderCoords?.lat,
+    riderCoords?.lng,
+    navigationMode,
     routeColor,
     showRoute,
     interactivePins,
@@ -533,6 +722,7 @@ export const MapBlock: React.FC<Props> = ({
       style={{
         position: "relative",
         overflow: "hidden",
+        ...(flat ? { flex: 1, minHeight: height ?? 440, width: "100%" } : {}),
         ...(height ? { height } : {}),
       }}
     >

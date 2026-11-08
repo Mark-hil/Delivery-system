@@ -10,7 +10,7 @@ const methods = ["Receiver OTP", "Signature", "Package photo"] as const;
 
 export const ProofOfDeliveryPage: React.FC = () => {
   const navigate = useNavigate();
-  const { confirmDelivery, clearJob } = useRiderJob();
+  const { activeJob, confirmDelivery, clearJob } = useRiderJob();
   const { toast } = useUI();
   const [method, setMethod] = useState<(typeof methods)[number]>("Receiver OTP");
   const [otp, setOtp] = useState("");
@@ -27,6 +27,8 @@ export const ProofOfDeliveryPage: React.FC = () => {
       clearJob();
       toast("Delivery confirmed — nice work!");
       navigate("/rider/dashboard", { replace: true });
+    } catch (err: any) {
+      toast(err?.message || "Verification failed");
     } finally {
       setLoading(false);
     }
@@ -36,7 +38,17 @@ export const ProofOfDeliveryPage: React.FC = () => {
     <div className="page">
       <div className="page-scroll">
         <TopBar title="Proof of delivery" />
-        <div className="chip-row" style={{ marginTop: 16 }}>
+        {activeJob && (
+          <div style={{ margin: "10px 22px", padding: 12, borderRadius: 14, background: "#F1F5F9" }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: "var(--ink)" }}>
+              Delivery #{activeJob.trackingNumber || activeJob.id.slice(0, 8)}
+            </div>
+            <div className="muted" style={{ fontSize: 11.5, marginTop: 2 }}>
+              Customer: {activeJob.customerName} {activeJob.customerPhone ? `(${activeJob.customerPhone})` : ""}
+            </div>
+          </div>
+        )}
+        <div className="chip-row" style={{ marginTop: 12 }}>
           {methods.map((m) => (
             <button key={m} className={`chip ${method === m ? "selected" : ""}`} onClick={() => setMethod(m)}>
               {m}

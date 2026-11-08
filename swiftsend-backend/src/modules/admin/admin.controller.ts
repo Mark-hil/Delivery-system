@@ -11,7 +11,7 @@ import {
   HttpCode,
   HttpStatus,
 } from "@nestjs/common";
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiResponse, ApiTags } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard.js";
 import { RolesGuard } from "../auth/guards/roles.guard.js";
 import { Roles } from "../auth/decorators/roles.decorator.js";
@@ -68,12 +68,20 @@ export class AdminController {
   // ---------------------------------------------------------
 
   @Get("users")
-  @ApiOperation({ summary: "List users with role and search filter" })
+  @ApiOperation({ summary: "List all users (optional role and search filters)" })
+  @ApiQuery({ name: "role", required: false, description: "Optional role filter (customer, rider, admin)" })
+  @ApiQuery({ name: "search", required: false, description: "Optional name, email, or phone search" })
   async getUsers(
     @Query("role") role?: string,
     @Query("search") search?: string
   ) {
     return this.adminService.getUsers(role, search);
+  }
+
+  @Get("users/all")
+  @ApiOperation({ summary: "Get all users with no query parameters" })
+  async getAllUsers() {
+    return this.adminService.getUsers();
   }
 
   @Post("users")
@@ -113,6 +121,7 @@ export class AdminController {
 
   @Get("riders")
   @ApiOperation({ summary: "List all riders with documents and status" })
+  @ApiQuery({ name: "approvalStatus", required: false, description: "Optional status filter (Pending, Approved, Suspended)" })
   async getRiders(@Query("approvalStatus") approvalStatus?: string) {
     return this.adminService.getRiders(approvalStatus);
   }
@@ -144,6 +153,8 @@ export class AdminController {
 
   @Get("deliveries")
   @ApiOperation({ summary: "List all deliveries with status and search filter" })
+  @ApiQuery({ name: "status", required: false, description: "Optional delivery status filter" })
+  @ApiQuery({ name: "search", required: false, description: "Optional search filter" })
   async getDeliveries(
     @Query("status") status?: string,
     @Query("search") search?: string
@@ -178,6 +189,7 @@ export class AdminController {
 
   @Get("payments")
   @ApiOperation({ summary: "List payment ledger records" })
+  @ApiQuery({ name: "status", required: false, description: "Optional payment status filter (Paid, Pending, Failed)" })
   async getPayments(@Query("status") status?: string) {
     return this.adminService.getPayments(status);
   }

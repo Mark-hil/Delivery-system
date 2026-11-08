@@ -1,6 +1,6 @@
 import React, { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { MapBlock, MapPin } from "@/components/MapBlock";
+import { MapBlock } from "@/components/MapBlock";
 import { Button } from "@/components/Button";
 import { useRiderJob } from "@/context/RiderJobContext";
 import { formatCedis } from "@/utils/formatters";
@@ -17,16 +17,84 @@ export const RequestPopupPage: React.FC = () => {
 
   return (
     <div className="page">
-      <div style={{ flex: 1, position: "relative" }}>
-        <MapBlock flat>
-          <MapPin color="var(--green)" style={{ top: "40%", left: "45%" }} />
-        </MapBlock>
+      <div
+        style={{
+          position: "absolute",
+          top: 14,
+          left: 14,
+          zIndex: 30,
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => {
+            rejectIncoming();
+            navigate("/rider/dashboard", { replace: true });
+          }}
+          style={{
+            background: "rgba(255,255,255,0.92)",
+            border: "1px solid rgba(0,0,0,0.12)",
+            borderRadius: "50%",
+            width: 38,
+            height: 38,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            fontSize: 16,
+            fontWeight: 700,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+          }}
+        >
+          ←
+        </button>
       </div>
 
-      <div style={{ padding: 22, borderRadius: "24px 24px 0 0", background: "white", boxShadow: "0 -10px 30px rgba(0,0,0,.1)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 420,
+          display: "flex",
+          flexDirection: "column",
+          position: "relative",
+        }}
+      >
+        <MapBlock
+          flat
+          height={420}
+          routeColor="#4285F4"
+          pickupAddress={incomingRequest.pickupAddress}
+          dropoffAddress={incomingRequest.dropoffAddress}
+          badge={`${incomingRequest.distanceKm} km · Route preview`}
+        />
+      </div>
+
+      <div
+        style={{
+          padding: 22,
+          borderRadius: "24px 24px 0 0",
+          background: "white",
+          boxShadow: "0 -10px 30px rgba(0,0,0,.1)",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 10,
+          }}
+        >
           <span style={{ fontWeight: 700, fontSize: 14 }}>New delivery request</span>
-          <span style={{ fontFamily: "var(--font-display)", fontSize: 16, color: "var(--green-dark)" }}>{formatCedis(incomingRequest.payout)}</span>
+          <span
+            style={{
+              fontFamily: "var(--font-display)",
+              fontSize: 16,
+              color: "var(--green-dark)",
+            }}
+          >
+            {formatCedis(incomingRequest.payout)}
+          </span>
         </div>
         <Row label="Pickup" value={incomingRequest.pickupAddress} />
         <Row label="Destination" value={incomingRequest.dropoffAddress} />

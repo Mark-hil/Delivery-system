@@ -10,9 +10,11 @@ export const SearchingRiderPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useUI();
-  const { draft, waitForMatch, loadingMatch, resetFlow } = useDelivery();
+  const { draft, current, waitForMatch, loadingMatch, resetFlow } = useDelivery();
 
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
       const ref = searchParams.get("reference") || searchParams.get("trxref");
       if (ref) {
@@ -24,11 +26,35 @@ export const SearchingRiderPage: React.FC = () => {
         }
         setSearchParams({}, { replace: true });
       }
-      await waitForMatch();
-      navigate("/customer/rider-found", { replace: true });
+
+      // Continuously poll backend for a REAL rider accepting this order
+      const checkMatch = async () => {
+        if (cancelled) return;
+        const matched = await waitForMatch();
+        if (matched && matched.status !== "searching") {
+          toast(`Rider ${matched.riderName ?? "Kwame"} accepted your order!`);
+          navigate("/customer/rider-found", { replace: true });
+          return;
+        }
+        // Poll every 3 seconds while searching
+        if (!cancelled) {
+          timerId = setTimeout(checkMatch, 3000);
+        }
+      };
+
+      let timerId = setTimeout(checkMatch, 1500);
+
+      return () => {
+        cancelled = true;
+        clearTimeout(timerId);
+      };
     })();
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [current?.id]);
 
   return (
     <div className="page" style={{ justifyContent: "space-between" }}>

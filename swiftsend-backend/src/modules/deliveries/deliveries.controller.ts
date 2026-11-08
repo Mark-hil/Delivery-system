@@ -83,6 +83,20 @@ export class DeliveriesController {
     return this.deliveriesService.findById(id, user);
   }
 
+  @Post("deliveries/:id/complete")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles("customer")
+  @ApiBearerAuth("access-token")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Mark a delivery as completed by the customer" })
+  @ApiResponse({ status: 200, description: "Delivery marked as delivered" })
+  async completeDelivery(
+    @Param("id") id: string,
+    @CurrentUser() user: CurrentUserPayload
+  ) {
+    return this.deliveriesService.completeByCustomer(id, user);
+  }
+
   @Post("deliveries/:id/rate")
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles("customer")

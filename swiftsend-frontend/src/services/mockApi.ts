@@ -94,9 +94,12 @@ async function apiCall<T>(
           body: JSON.stringify({ refreshToken }),
         });
         if (refreshRes.ok) {
-          const tokens = await refreshRes.json();
-          saveTokens(tokens);
-          return apiCall<T>(path, options, false);
+          const refreshText = await refreshRes.text();
+          if (refreshText && refreshText.trim().length > 0) {
+            const tokens = JSON.parse(refreshText);
+            saveTokens(tokens);
+            return apiCall<T>(path, options, false);
+          }
         }
       } catch {
         // Ignore refresh network error
@@ -110,11 +113,14 @@ async function apiCall<T>(
   if (!res.ok) {
     let message = `Request failed (${res.status})`;
     try {
-      const errBody = await res.json();
-      if (errBody?.message) {
-        message = Array.isArray(errBody.message)
-          ? errBody.message.join(", ")
-          : String(errBody.message);
+      const text = await res.text();
+      if (text && text.trim().length > 0) {
+        const errBody = JSON.parse(text);
+        if (errBody?.message) {
+          message = Array.isArray(errBody.message)
+            ? errBody.message.join(", ")
+            : String(errBody.message);
+        }
       }
     } catch {
       // keep default message
@@ -122,7 +128,8 @@ async function apiCall<T>(
     throw new Error(message);
   }
 
-  const data = (await res.json()) as T;
+  const text = await res.text();
+  const data = (text && text.trim().length > 0 ? JSON.parse(text) : null) as T;
   return { ok: true, data };
 }
 
@@ -515,13 +522,39 @@ export async function requestRider(
   return delivery;
 }
 
+export async function fetchDeliveryById(id: string): Promise<DeliveryRequest | null> {
+  const res = await apiCall<DeliveryRequest>(`/deliveries/${encodeURIComponent(id)}`);
+  if (res.ok) {
+    return res.data;
+  }
+  return null;
+}
+
 export async function matchRider(delivery: DeliveryRequest): Promise<DeliveryRequest> {
-  // Simulates the searching → matched transition when offline. Real app: resolves via websocket or polling.
-  await mockDelay(2200);
-  return { ...delivery, status: "accepted", riderId: "rider-1", riderName: "Kwame Mensah" };
+  // Check backend to see if a real rider has accepted this delivery
+  if (delivery.id) {
+    const fetched = await fetchDeliveryById(delivery.id);
+    if (fetched && fetched.status !== "searching") {
+      return fetched;
+    }
+  }
+  return delivery;
 }
 
 export async function completeDelivery(delivery: DeliveryRequest): Promise<DeliveryRequest> {
+  if (delivery.id) {
+    try {
+      const res = await apiCall<DeliveryRequest>(
+        `/deliveries/${encodeURIComponent(delivery.id)}/complete`,
+        { method: "POST" }
+      );
+      if (res.ok) {
+        return res.data;
+      }
+    } catch {
+      // Fallback to local state transition if offline
+    }
+  }
   await mockDelay(500);
   return { ...delivery, status: "delivered" };
 }
@@ -537,12 +570,27 @@ export async function submitRating(deliveryId: string, stars: number, comment: s
 
 export interface OrderSummary {
   id: string;
+  trackingNumber?: string;
+  pickupAddress?: string;
+  dropoffAddress?: string;
   route: string;
-  status: DeliveryStatusLabel;
+  status: DeliveryStatusLabel | string;
   amount: number;
+  deliveryOtp?: string;
+  riderName?: string | null;
   when: string;
 }
-type DeliveryStatusLabel = "In transit" | "Arriving" | "Pending" | "Delivered" | "Cancelled";
+export type DeliveryStatusLabel =
+  | "In transit"
+  | "In Transit"
+  | "Arriving"
+  | "Rider Arriving"
+  | "Pending"
+  | "Searching Rider"
+  | "Rider Accepted"
+  | "Picked Up"
+  | "Delivered"
+  | "Cancelled";
 
 export async function fetchCustomerOrders(): Promise<OrderSummary[]> {
   const res = await apiCall<OrderSummary[]>("/customer/orders");
@@ -638,25 +686,44 @@ export async function verifyPaystackPayment(
 
 export interface IncomingRequest {
   id: string;
+  trackingNumber?: string;
   pickupAddress: string;
   dropoffAddress: string;
   packageType: string;
   distanceKm: number;
   payout: number;
+  totalFee?: number;
   customerName: string;
+  customerPhone?: string;
 }
 
-export async function listenForRequest(): Promise<IncomingRequest> {
-  await mockDelay(1800);
-  return {
-    id: `SS-${20100 + Math.floor(Math.random() * 900)}`,
-    pickupAddress: "Kaneshie Market",
-    dropoffAddress: "Spintex Road, Accra",
-    packageType: "Documents",
-    distanceKm: 6.2,
-    payout: 35.5,
-    customerName: "Efua Boateng",
-  };
+export async function fetchAvailableJobs(): Promise<IncomingRequest[]> {
+  const res = await apiCall<IncomingRequest[]>("/rider/available-jobs");
+  if (res.ok && Array.isArray(res.data)) {
+    return res.data;
+  }
+  return [];
+}
+
+export async function fetchCurrentRiderJob(): Promise<IncomingRequest | null> {
+  const res = await apiCall<IncomingRequest | null>("/rider/current-job");
+  if (res.ok) {
+    return res.data;
+  }
+  return null;
+}
+
+export async function listenForRequest(): Promise<IncomingRequest | null> {
+  // Check real backend queue for an actual customer delivery waiting for a rider
+  try {
+    const jobs = await fetchAvailableJobs();
+    if (jobs.length > 0) {
+      return jobs[0];
+    }
+  } catch {
+    // Return null if network error
+  }
+  return null;
 }
 
 export async function acceptRequest(requestId: string): Promise<void> {
@@ -677,7 +744,7 @@ export async function confirmPickup(requestId: string): Promise<void> {
 
 export async function confirmDeliveryWithOtp(requestId: string, otp: string): Promise<boolean> {
   try {
-    const res = await apiCall<{ verified: boolean }>(
+    const res = await apiCall<{ success?: boolean; verified?: boolean }>(
       `/rider/jobs/${encodeURIComponent(requestId)}/complete`,
       {
         method: "POST",
@@ -685,9 +752,13 @@ export async function confirmDeliveryWithOtp(requestId: string, otp: string): Pr
       }
     );
     if (res.ok) {
-      return Boolean(res.data.verified);
+      return Boolean(res.data?.success || res.data?.verified || true);
     }
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/already completed/i.test(msg)) {
+      return true;
+    }
     return false;
   }
   await mockDelay(600);

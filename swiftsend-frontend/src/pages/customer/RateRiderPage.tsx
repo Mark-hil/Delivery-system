@@ -3,11 +3,13 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/Button";
 import { StarRating } from "@/components/Misc";
 import { useDelivery } from "@/context/DeliveryContext";
+import { useUI } from "@/context/UIContext";
 import * as api from "@/services/mockApi";
 
 export const RateRiderPage: React.FC = () => {
   const navigate = useNavigate();
   const { current, resetFlow } = useDelivery();
+  const { toast } = useUI();
   const [stars, setStars] = useState(5);
   const [comment, setComment] = useState("");
   const [loading, setLoading] = useState(false);
@@ -15,7 +17,15 @@ export const RateRiderPage: React.FC = () => {
   const submit = async () => {
     setLoading(true);
     try {
-      await api.submitRating(current?.id ?? "", stars, comment);
+      if (current?.id) {
+        await api.submitRating(current.id, stars, comment);
+      }
+      toast("Thank you for rating your rider!");
+      resetFlow();
+      navigate("/customer/home", { replace: true });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Could not submit rating";
+      toast(msg);
       resetFlow();
       navigate("/customer/home", { replace: true });
     } finally {

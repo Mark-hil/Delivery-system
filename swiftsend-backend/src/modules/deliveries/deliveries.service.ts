@@ -411,15 +411,26 @@ export class DeliveriesService {
 
     const deliveries = await this.prisma.delivery.findMany({
       where: { customerId: customer.id },
+      include: {
+        rider: {
+          include: {
+            user: true,
+          },
+        },
+      },
       orderBy: { createdAt: "desc" },
     });
 
     return deliveries.map((d) => ({
       id: d.id,
       trackingNumber: d.trackingNumber,
+      pickupAddress: d.pickupAddress,
+      dropoffAddress: d.dropoffAddress,
       route: `${d.pickupAddress.split(",")[0]} → ${d.dropoffAddress.split(",")[0]}`,
       status: this.formatStatusLabel(d.status),
-      amount: `GH₵ ${Number(d.totalFee).toFixed(2)}`,
+      amount: Number(d.totalFee),
+      deliveryOtp: d.deliveryOtp,
+      riderName: d.rider?.user?.fullName ?? null,
       when: d.createdAt.toLocaleDateString("en-US", {
         month: "short",
         day: "numeric",
@@ -463,6 +474,55 @@ export class DeliveriesService {
   }
 
   // ---------------------------------------------------------
+  // 5B. COMPLETE DELIVERY (Customer tracking completion / receipt confirmation)
+  // ---------------------------------------------------------
+  async completeByCustomer(id: string, user: CurrentUserPayload) {
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id },
+      include: {
+        customer: true,
+        rider: { include: { user: true } },
+      },
+    });
+
+    if (!delivery) {
+      throw new NotFoundException("Delivery not found");
+    }
+
+    const customer = await this.prisma.customerProfile.findUnique({
+      where: { userId: user.userId },
+    });
+
+    if (!customer || delivery.customerId !== customer.id) {
+      throw new ForbiddenException("You can only complete your own deliveries");
+    }
+
+    // Assign default rider if simulated customer tracking finished before rider accepted
+    let riderId = delivery.riderId;
+    if (!riderId) {
+      const defaultRider = await this.prisma.riderProfile.findFirst();
+      if (defaultRider) {
+        riderId = defaultRider.id;
+      }
+    }
+
+    const updated = await this.prisma.delivery.update({
+      where: { id },
+      data: {
+        status: "delivered",
+        riderId,
+        deliveredAt: delivery.deliveredAt ?? new Date(),
+      },
+      include: {
+        customer: true,
+        rider: { include: { user: true } },
+      },
+    });
+
+    return this.formatDelivery(updated, user.role);
+  }
+
+  // ---------------------------------------------------------
   // 6. RATE RIDER (Secured with Ownership & Status Checks)
   // ---------------------------------------------------------
   async rateDelivery(id: string, dto: RateDeliveryDto, user: CurrentUserPayload) {
@@ -482,27 +542,39 @@ export class DeliveriesService {
       throw new ForbiddenException("You can only rate your own deliveries");
     }
 
-    if (delivery.status !== "delivered") {
-      throw new BadRequestException("Only completed deliveries can be rated");
+    if (delivery.status === "cancelled") {
+      throw new BadRequestException("Cancelled deliveries cannot be rated");
     }
 
     if (delivery.rating !== null) {
       throw new BadRequestException("This delivery has already been rated");
     }
 
+    // Ensure rider is linked and status is marked delivered when customer submits final rating
+    let riderId = delivery.riderId;
+    if (!riderId) {
+      const defaultRider = await this.prisma.riderProfile.findFirst();
+      if (defaultRider) {
+        riderId = defaultRider.id;
+      }
+    }
+
     await this.prisma.delivery.update({
       where: { id },
       data: {
+        status: "delivered",
+        riderId,
+        deliveredAt: delivery.deliveredAt ?? new Date(),
         rating: dto.stars,
         ratingComment: dto.comment || null,
       },
     });
 
     // Recalculate rider's average rating if assigned
-    if (delivery.riderId) {
+    if (riderId) {
       const aggregates = await this.prisma.delivery.aggregate({
         where: {
-          riderId: delivery.riderId,
+          riderId,
           rating: { not: null },
         },
         _avg: { rating: true },
@@ -511,7 +583,7 @@ export class DeliveriesService {
 
       const avg = aggregates._avg.rating || 5.0;
       await this.prisma.riderProfile.update({
-        where: { id: delivery.riderId },
+        where: { id: riderId },
         data: {
           rating: Math.round(avg * 10) / 10,
         },

@@ -11,12 +11,22 @@ export const RiderDashboardPage: React.FC = () => {
   const navigate = useNavigate();
   const { session } = useAuth();
   const rider = session?.user as RiderUser;
-  const { isOnline, toggleOnline, incomingRequest, startListening, listening } = useRiderJob();
+  const { isOnline, toggleOnline, incomingRequest, activeJob, startListening, listening } = useRiderJob();
 
   useEffect(() => {
     if (incomingRequest) navigate("/rider/request-popup");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incomingRequest]);
+
+  // If rider is online, automatically check for available jobs periodically
+  useEffect(() => {
+    if (!isOnline || incomingRequest || activeJob) return;
+    startListening();
+    const interval = setInterval(() => {
+      startListening();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [isOnline, incomingRequest, activeJob, startListening]);
 
   const expiringSoon = documentsExpiringSoon(rider?.documents ?? []);
 
@@ -61,6 +71,24 @@ export const RiderDashboardPage: React.FC = () => {
           <span className="knob" />
         </span>
       </button>
+
+      {activeJob && (
+        <div style={{ margin: "0 22px 14px", padding: 14, borderRadius: 16, background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: "#1E40AF", marginBottom: 4 }}>
+            ⚡ Active Job in Progress
+          </div>
+          <div style={{ fontSize: 12, color: "var(--ink)", marginBottom: 8 }}>
+            {activeJob.pickupAddress.split(",")[0]} → {activeJob.dropoffAddress.split(",")[0]}
+          </div>
+          <button
+            className="btn btn-primary"
+            style={{ padding: "8px 12px", fontSize: 12 }}
+            onClick={() => navigate("/rider/pickup")}
+          >
+            Continue Active Job →
+          </button>
+        </div>
+      )}
 
       <MapBlock badge="3 requests nearby" showRoute={false} showNearbyRiders autoLocateUser />
 

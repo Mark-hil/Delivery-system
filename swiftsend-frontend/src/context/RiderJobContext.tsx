@@ -24,6 +24,15 @@ export const RiderJobProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [listening, setListening] = useState(false);
   const [activeJob, setActiveJob] = useState<IncomingRequest | null>(null);
 
+  const [rejectedJobIds, setRejectedJobIds] = useState<Set<string>>(new Set());
+
+  // Check for existing assigned in-progress job on mount
+  React.useEffect(() => {
+    api.fetchCurrentRiderJob().then((job) => {
+      if (job) setActiveJob(job);
+    });
+  }, []);
+
   const toggleOnline = useCallback(() => setIsOnline((v) => !v), []);
 
   const startListening = useCallback(async () => {
@@ -31,11 +40,13 @@ export const RiderJobProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setListening(true);
     try {
       const req = await api.listenForRequest();
-      setIncomingRequest(req);
+      if (req && !rejectedJobIds.has(req.id)) {
+        setIncomingRequest(req);
+      }
     } finally {
       setListening(false);
     }
-  }, [isOnline]);
+  }, [isOnline, rejectedJobIds]);
 
   const acceptIncoming = useCallback(async () => {
     if (!incomingRequest) return;
@@ -44,7 +55,12 @@ export const RiderJobProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setIncomingRequest(null);
   }, [incomingRequest]);
 
-  const rejectIncoming = useCallback(() => setIncomingRequest(null), []);
+  const rejectIncoming = useCallback(() => {
+    if (incomingRequest) {
+      setRejectedJobIds((prev) => new Set(prev).add(incomingRequest.id));
+    }
+    setIncomingRequest(null);
+  }, [incomingRequest]);
 
   const markPickedUp = useCallback(async () => {
     if (!activeJob) return;

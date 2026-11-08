@@ -85,6 +85,20 @@ export class RiderController {
     return this.riderService.getEarnings(user.userId);
   }
 
+  @Get("available-jobs")
+  @ApiOperation({ summary: "Get real pending deliveries waiting for a rider" })
+  @ApiResponse({ status: 200, description: "List of available delivery jobs" })
+  async getAvailableJobs(@CurrentUser() user: CurrentUserPayload) {
+    return this.riderService.getAvailableJobs(user.userId);
+  }
+
+  @Get("current-job")
+  @ApiOperation({ summary: "Get the active delivery job currently assigned to this rider" })
+  @ApiResponse({ status: 200, description: "Active delivery job or null" })
+  async getCurrentJob(@CurrentUser() user: CurrentUserPayload) {
+    return this.riderService.getCurrentJob(user.userId);
+  }
+
   @Patch("status")
   @ApiOperation({ summary: "Toggle rider online / offline availability" })
   @ApiResponse({ status: 200, description: "Updated availability" })

@@ -626,64 +626,10 @@ export async function geocodeGhanaAddress(
   return { lat: fallback.lat, lng: fallback.lng, label: shortLabel };
 }
 
-export async function reverseGeocodeGhana(lat: number, lng: number): Promise<string> {
-  try {
-    const url = new URL("https://nominatim.openstreetmap.org/reverse");
-    url.searchParams.set("lat", String(lat));
-    url.searchParams.set("lon", String(lng));
-    url.searchParams.set("format", "json");
-    url.searchParams.set("zoom", "18");
+// In-memory reverse geocode cache by rounded coords (lat,lng to ~100m) to avoid duplicate API calls
+const reverseGeocodeCache = new Map<string, string>();
 
-    const res = await fetch(url.toString(), {
-      headers: {
-        Accept: "application/json",
-      },
-    });
-    if (res.ok) {
-      const data = (await res.json()) as {
-        name?: string;
-        display_name?: string;
-        address?: {
-          road?: string;
-          suburb?: string;
-          neighbourhood?: string;
-          quarter?: string;
-          city?: string;
-          town?: string;
-          village?: string;
-          state?: string;
-        };
-      };
-      const road = data.address?.road || data.name;
-      const area =
-        data.address?.suburb ||
-        data.address?.neighbourhood ||
-        data.address?.quarter ||
-        data.address?.city ||
-        data.address?.town ||
-        data.address?.village ||
-        data.address?.state ||
-        "Ghana";
-      const city = data.address?.city || data.address?.town || data.address?.state;
-      if (road && road !== area) {
-        const full = city && city !== area ? `${road}, ${area}, ${city}` : `${road}, ${area}`;
-        geocodeCache.set(full.toLowerCase(), { lat, lng, label: road });
-        return full;
-      }
-      if (data.display_name) {
-        const formatted = data.display_name
-          .split(",")
-          .slice(0, 3)
-          .map((s) => s.trim())
-          .join(", ");
-        geocodeCache.set(formatted.toLowerCase(), { lat, lng, label: formatted.split(",")[0] });
-        return formatted;
-      }
-    }
-  } catch {
-    // Fallback to nearest known place in Ghana
-  }
-
+function findNearestKnownGhanaPlace(lat: number, lng: number): string {
   let nearest = GHANA_PLACES[0];
   let bestDist = Infinity;
   for (const place of GHANA_PLACES) {
@@ -693,7 +639,18 @@ export async function reverseGeocodeGhana(lat: number, lng: number): Promise<str
       nearest = place;
     }
   }
-  return `Near ${nearest.title}`;
+  return nearest.address || nearest.title;
+}
+
+export async function reverseGeocodeGhana(lat: number, lng: number): Promise<string> {
+  const cacheKey = `${lat.toFixed(3)},${lng.toFixed(3)}`;
+  const cached = reverseGeocodeCache.get(cacheKey);
+  if (cached) return cached;
+
+  // Use local Ghana gazetteer instantly (0ms network delay, no CORS, no external rate limits)
+  const nearest = findNearestKnownGhanaPlace(lat, lng);
+  reverseGeocodeCache.set(cacheKey, nearest);
+  return nearest;
 }
 
 export async function detectUserLocationInGhana(): Promise<DetectedLocation | null> {
@@ -738,14 +695,31 @@ export async function detectUserLocationInGhana(): Promise<DetectedLocation | nu
 
 const routeCache = new Map<string, OsrmRouteResult>();
 
+export function buildInstantRoadPreview(pickup: Coords, dropoff: Coords): [number, number][] {
+  const steps = 20;
+  const coordinates: [number, number][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const curve = Math.sin(t * Math.PI) * 0.0028;
+    coordinates.push([
+      pickup.lat + (dropoff.lat - pickup.lat) * t + curve,
+      pickup.lng + (dropoff.lng - pickup.lng) * t - curve,
+    ]);
+  }
+  return coordinates;
+}
+
 export async function fetchOsrmRoute(pickup: Coords, dropoff: Coords): Promise<OsrmRouteResult> {
   const key = `${pickup.lat.toFixed(4)},${pickup.lng.toFixed(4)}->${dropoff.lat.toFixed(4)},${dropoff.lng.toFixed(4)}`;
   const cached = routeCache.get(key);
   if (cached) return cached;
 
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3200);
     const url = `https://router.project-osrm.org/route/v1/driving/${pickup.lng},${pickup.lat};${dropoff.lng},${dropoff.lat}?overview=full&geometries=geojson`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
     if (res.ok) {
       const data = (await res.json()) as {
         code?: string;
@@ -772,16 +746,7 @@ export async function fetchOsrmRoute(pickup: Coords, dropoff: Coords): Promise<O
     // Fallback to interpolated road path if OSRM is unreachable
   }
 
-  const steps = 16;
-  const coordinates: [number, number][] = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const curve = Math.sin(t * Math.PI) * 0.0045;
-    coordinates.push([
-      pickup.lat + (dropoff.lat - pickup.lat) * t + curve,
-      pickup.lng + (dropoff.lng - pickup.lng) * t - curve,
-    ]);
-  }
+  const coordinates = buildInstantRoadPreview(pickup, dropoff);
   const straightKm = Math.hypot(dropoff.lat - pickup.lat, dropoff.lng - pickup.lng) * 111;
   const distanceKm = Math.max(1.2, Math.round(straightKm * 1.25 * 10) / 10);
   const durationMin = Math.max(8, Math.round(distanceKm * 2.8));

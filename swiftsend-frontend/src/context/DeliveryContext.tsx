@@ -23,11 +23,12 @@ interface DeliveryContextValue {
   setDraft: (d: Partial<DeliveryDraft>) => void;
   estimate: Awaited<ReturnType<typeof api.estimateDelivery>> | null;
   current: DeliveryRequest | null;
+  setCurrent: (d: DeliveryRequest | null) => void;
   loadingEstimate: boolean;
   loadingMatch: boolean;
   fetchEstimate: () => Promise<void>;
   confirmRequest: (paymentMethod?: "wallet" | "mobile_money" | "card") => Promise<DeliveryRequest | undefined>;
-  waitForMatch: () => Promise<void>;
+  waitForMatch: () => Promise<DeliveryRequest | null>;
   finishDelivery: () => Promise<void>;
   resetFlow: () => void;
 }
@@ -107,11 +108,15 @@ export const DeliveryProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   );
 
   const waitForMatch = useCallback(async () => {
-    if (!current) return;
+    if (!current) return null;
     setLoadingMatch(true);
     try {
       const matched = await api.matchRider(current);
-      setCurrent(matched);
+      if (matched && matched.status !== "searching") {
+        setCurrent(matched);
+        return matched;
+      }
+      return null;
     } finally {
       setLoadingMatch(false);
     }
@@ -134,6 +139,7 @@ export const DeliveryProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setDraft,
     estimate,
     current,
+    setCurrent,
     loadingEstimate,
     loadingMatch,
     fetchEstimate,

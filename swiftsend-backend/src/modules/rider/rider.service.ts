@@ -459,6 +459,104 @@ export class RiderService {
     };
   }
 
+  // ---------------------------------------------------------
+  // 6. AVAILABLE JOBS (Real Dispatch Queue for Online Riders)
+  // ---------------------------------------------------------
+  async getAvailableJobs(userId: string) {
+    const rider = await this.prisma.riderProfile.findUnique({
+      where: { userId },
+      include: { documents: true },
+    });
+
+    if (!rider) {
+      throw new NotFoundException("Rider profile not found");
+    }
+
+    const available = await this.prisma.delivery.findMany({
+      where: {
+        status: "searching",
+      },
+      include: {
+        customer: {
+          include: { user: true },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+    });
+
+    return available.map((d) => {
+      // Rider payout is totalFee minus platform serviceFee
+      const payout = Math.max(
+        0,
+        Number(d.totalFee) - Number(d.serviceFee)
+      );
+      return {
+        id: d.id,
+        trackingNumber: d.trackingNumber,
+        pickupAddress: d.pickupAddress,
+        dropoffAddress: d.dropoffAddress,
+        packageType: d.packageType,
+        packageDescription: d.packageDescription,
+        distanceKm: Number(d.distanceKm),
+        payout: payout > 0 ? payout : Number(d.totalFee) * 0.85,
+        totalFee: Number(d.totalFee),
+        customerName: d.customer?.user?.fullName ?? "Customer",
+        customerPhone: d.customer?.user?.phone ?? "",
+        createdAt: d.createdAt.toISOString(),
+      };
+    });
+  }
+
+  // ---------------------------------------------------------
+  // 7. CURRENT ACTIVE JOB (For Assigned Rider)
+  // ---------------------------------------------------------
+  async getCurrentJob(userId: string) {
+    const rider = await this.prisma.riderProfile.findUnique({
+      where: { userId },
+    });
+
+    if (!rider) {
+      throw new NotFoundException("Rider profile not found");
+    }
+
+    const active = await this.prisma.delivery.findFirst({
+      where: {
+        riderId: rider.id,
+        status: { in: ["accepted", "arriving", "pickedUp"] },
+      },
+      include: {
+        customer: {
+          include: { user: true },
+        },
+      },
+      orderBy: { updatedAt: "desc" },
+    });
+
+    if (!active) return null;
+
+    const payout = Math.max(
+      0,
+      Number(active.totalFee) - Number(active.serviceFee)
+    );
+
+    return {
+      id: active.id,
+      trackingNumber: active.trackingNumber,
+      pickupAddress: active.pickupAddress,
+      dropoffAddress: active.dropoffAddress,
+      packageType: active.packageType,
+      packageDescription: active.packageDescription,
+      status: active.status,
+      distanceKm: Number(active.distanceKm),
+      payout: payout > 0 ? payout : Number(active.totalFee) * 0.85,
+      totalFee: Number(active.totalFee),
+      customerName: active.customer?.user?.fullName ?? "Customer",
+      customerPhone: active.customer?.user?.phone ?? "",
+      createdAt: active.createdAt.toISOString(),
+    };
+  }
+
   private formatDelivery(delivery: any) {
     return {
       id: delivery.id,
