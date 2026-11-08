@@ -7,7 +7,7 @@ import { useUI } from "@/context/UIContext";
 
 export const LiveTrackingPage: React.FC = () => {
   const navigate = useNavigate();
-  const { finishDelivery } = useDelivery();
+  const { draft, finishDelivery } = useDelivery();
   const { toast } = useUI();
   const [etaMin, setEtaMin] = useState(6);
 
@@ -27,7 +27,12 @@ export const LiveTrackingPage: React.FC = () => {
   return (
     <div className="page" style={{ position: "relative" }}>
       <div style={{ flex: 1, position: "relative" }}>
-        <MapBlock flat routeColor="var(--blue)">
+        <MapBlock
+          flat
+          routeColor="var(--blue)"
+          pickupAddress={draft.pickupAddress}
+          dropoffAddress={draft.dropoffAddress}
+        >
           <MapPin color="var(--blue)" style={{ bottom: "34%", left: "30%" }} />
           <MapPin color="var(--green)" style={{ top: "26%", left: "58%" }} />
         </MapBlock>

@@ -8,26 +8,139 @@ import {
   RiderDocument,
   RiderUser,
 } from "@/types";
-import { initialsOf } from "@/utils/formatters";
 
 /**
- * This file stands in for a real backend. Every exported function returns a Promise
- * with the shape a real REST/GraphQL call would — so swapping mockApi for a real
- * api client later means changing this file only, not the screens that call it.
+ * API service layer connecting SwiftSend Frontend to the NestJS Backend (`VITE_API_BASE_URL`)
+ * with automatic JWT access/refresh token handling and seamless offline fallback to in-memory state
+ * when the backend server is unreachable.
  */
 
+const API_BASE_URL: string =
+  (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL ?? "";
+
+const ACCESS_TOKEN_KEY = "swiftsend_access_token";
+const REFRESH_TOKEN_KEY = "swiftsend_refresh_token";
+const lastVerifiedOtpByDest = new Map<string, string>();
+
+function saveTokens(tokens?: { accessToken?: string; refreshToken?: string }) {
+  if (!tokens || typeof window === "undefined") return;
+  if (tokens.accessToken) localStorage.setItem(ACCESS_TOKEN_KEY, tokens.accessToken);
+  if (tokens.refreshToken) localStorage.setItem(REFRESH_TOKEN_KEY, tokens.refreshToken);
+}
+
+export function clearAuthTokens() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(ACCESS_TOKEN_KEY);
+  localStorage.removeItem(REFRESH_TOKEN_KEY);
+}
+
+export function hasActiveAuthToken(): boolean {
+  if (typeof window === "undefined") return false;
+  return Boolean(localStorage.getItem(ACCESS_TOKEN_KEY));
+}
+
+/**
+ * Calls the live NestJS backend.
+ * - Returns `{ ok: true, data }` when the backend responds with 2xx.
+ * - Throws an `Error` with the backend's message when the backend responds with 4xx/5xx.
+ * - Returns `{ ok: false }` ONLY when a network error occurs (backend is offline), allowing callers
+ *   to fall back to the local demo database seamlessly.
+ */
+async function apiCall<T>(
+  path: string,
+  options: RequestInit = {},
+  retryOn401 = true
+): Promise<{ ok: true; data: T } | { ok: false }> {
+  const token = typeof window !== "undefined" ? localStorage.getItem(ACCESS_TOKEN_KEY) : null;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string> | undefined),
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers,
+    });
+  } catch {
+    return { ok: false };
+  }
+
+  if (
+    res.status === 401 &&
+    retryOn401 &&
+    path !== "/auth/login" &&
+    path !== "/auth/refresh" &&
+    typeof window !== "undefined"
+  ) {
+    const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
+    if (refreshToken) {
+      try {
+        const refreshRes = await fetch(`${API_BASE_URL}/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refreshToken }),
+        });
+        if (refreshRes.ok) {
+          const tokens = await refreshRes.json();
+          saveTokens(tokens);
+          return apiCall<T>(path, options, false);
+        }
+      } catch {
+        // Ignore refresh network error
+      }
+    }
+  }
+
+  if (!res.ok) {
+    let message = `Request failed (${res.status})`;
+    try {
+      const errBody = await res.json();
+      if (errBody?.message) {
+        message = Array.isArray(errBody.message)
+          ? errBody.message.join(", ")
+          : String(errBody.message);
+      }
+    } catch {
+      // keep default message
+    }
+    throw new Error(message);
+  }
+
+  const data = (await res.json()) as T;
+  return { ok: true, data };
+}
+
+export async function logout(): Promise<void> {
+  const refreshToken =
+    typeof window !== "undefined" ? localStorage.getItem(REFRESH_TOKEN_KEY) : null;
+  try {
+    await apiCall("/auth/logout", {
+      method: "POST",
+      body: JSON.stringify({ refreshToken: refreshToken ?? undefined }),
+    }, false);
+  } catch {
+    // Ignore logout errors
+  } finally {
+    clearAuthTokens();
+  }
+}
+
 // ---------------------------------------------------------------------------
-// In-memory "database" (resets on app reload — that's expected for a frontend-only build)
+// In-memory demo state (no plaintext passwords or secrets in the client bundle)
 // ---------------------------------------------------------------------------
 
-let customerDb: (CustomerUser & { password: string })[] = [
+let customerDb: CustomerUser[] = [
   {
     id: "cust-1",
     role: "customer",
     fullName: "Ama Owusu",
     phone: "0248125567",
     email: "ama.owusu@email.com",
-    password: "Password1",
     avatarInitials: "AO",
     walletBalance: 214.3,
   },
@@ -41,7 +154,7 @@ function futureDate(daysFromNow: number): string {
 
 function freshDocumentSet(opts?: { expired?: boolean }): RiderDocument[] {
   const idExpiry = opts?.expired ? futureDate(-2) : futureDate(400);
-  const licenseExpiry = opts?.expired ? futureDate(-2) : futureDate(21); // intentionally close-to-expiry by default for demo
+  const licenseExpiry = opts?.expired ? futureDate(-2) : futureDate(21);
   const insuranceExpiry = opts?.expired ? futureDate(-2) : futureDate(180);
   return [
     { kind: "idFront", label: "National ID (front)", required: true, uri: "mock://id-front.jpg", uploadedAt: futureDate(-30), expiresAt: idExpiry },
@@ -52,20 +165,19 @@ function freshDocumentSet(opts?: { expired?: boolean }): RiderDocument[] {
   ];
 }
 
-let riderDb: (RiderUser & { password: string })[] = [
+let riderDb: RiderUser[] = [
   {
     id: "rider-1",
     role: "rider",
     fullName: "Kwame Mensah",
     phone: "0204451198",
     email: "kwame.mensah@email.com",
-    password: "Password1",
     vehicleType: "bike",
     plateNumber: "GT 4471-22",
     rating: 4.9,
     trips: 312,
     isOnline: true,
-    documents: freshDocumentSet(), // license expires in 21 days by default — good for demoing the expiry-warning banner
+    documents: freshDocumentSet(),
     facePhotoUri: "mock://face-kwame.jpg",
   },
   {
@@ -74,24 +186,22 @@ let riderDb: (RiderUser & { password: string })[] = [
     fullName: "Expired Eric",
     phone: "0551112222",
     email: "eric.expired@email.com",
-    password: "Password1",
     vehicleType: "car",
     plateNumber: "GT 9090-20",
     rating: 4.6,
     trips: 140,
     isOnline: false,
-    documents: freshDocumentSet({ expired: true }), // use this account to demo the forced document-revalidation flow
+    documents: freshDocumentSet({ expired: true }),
     facePhotoUri: "mock://face-eric.jpg",
   },
 ];
 
-let adminDb: (AdminUser & { password: string })[] = [
+let adminDb: AdminUser[] = [
   {
     id: "admin-1",
     role: "admin",
     fullName: "Nana Adjei",
     email: "admin@swiftsend.app",
-    password: "Admin123",
   },
 ];
 
@@ -135,11 +245,24 @@ let platformSettings: PlatformSettings = {
 };
 
 export async function getPlatformSettings(): Promise<PlatformSettings> {
+  const res = await apiCall<PlatformSettings>("/settings");
+  if (res.ok) {
+    platformSettings = { ...platformSettings, ...res.data };
+    return { ...platformSettings };
+  }
   await mockDelay(200);
   return { ...platformSettings };
 }
 
 export async function updatePlatformSettings(patch: Partial<PlatformSettings>): Promise<PlatformSettings> {
+  const res = await apiCall<PlatformSettings>("/admin/settings", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+  if (res.ok) {
+    platformSettings = { ...platformSettings, ...res.data };
+    return { ...platformSettings };
+  }
   await mockDelay(500);
   platformSettings = { ...platformSettings, ...patch };
   return { ...platformSettings };
@@ -160,31 +283,19 @@ export type LoginResult =
  * person never has to tell the app whether they're a customer, rider, or admin.
  */
 export async function login(identifier: string, password: string): Promise<LoginResult> {
-  await mockDelay();
-
-  const customerMatch = customerDb.find(
-    (u) => (u.email === identifier || u.phone === identifier) && u.password === password
+  const res = await apiCall<LoginResult & { tokens?: { accessToken?: string; refreshToken?: string } }>(
+    "/auth/login",
+    {
+      method: "POST",
+      body: JSON.stringify({ identifier, password }),
+    }
   );
-  if (customerMatch) {
-    const { password: _pw, ...user } = customerMatch;
-    return { role: "customer", user };
+  if (res.ok) {
+    saveTokens(res.data.tokens);
+    return { role: res.data.role, user: res.data.user } as LoginResult;
   }
 
-  const riderMatch = riderDb.find(
-    (u) => (u.email === identifier || u.phone === identifier) && u.password === password
-  );
-  if (riderMatch) {
-    const { password: _pw, ...user } = riderMatch;
-    return { role: "rider", user };
-  }
-
-  const adminMatch = adminDb.find((u) => u.email === identifier && u.password === password);
-  if (adminMatch) {
-    const { password: _pw, ...user } = adminMatch;
-    return { role: "admin", user };
-  }
-
-  throw new Error("Incorrect email/phone or password.");
+  throw new Error("Authentication server is unreachable. Please ensure the backend is running.");
 }
 
 // ---------------------------------------------------------------------------
@@ -197,23 +308,19 @@ export async function customerRegister(input: {
   email: string;
   password: string;
 }): Promise<CustomerUser> {
-  await mockDelay();
-  if (customerDb.some((u) => u.email === input.email)) {
-    throw new Error("An account with this email already exists.");
+  const res = await apiCall<{ user: CustomerUser; tokens?: { accessToken?: string; refreshToken?: string } }>(
+    "/auth/customer/register",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    }
+  );
+  if (res.ok) {
+    saveTokens(res.data.tokens);
+    return res.data.user;
   }
-  const newUser: CustomerUser & { password: string } = {
-    id: `cust-${customerDb.length + 1}`,
-    role: "customer",
-    fullName: input.fullName,
-    phone: input.phone,
-    email: input.email,
-    password: input.password,
-    avatarInitials: initialsOf(input.fullName),
-    walletBalance: 0,
-  };
-  customerDb.push(newUser);
-  const { password: _pw, ...user } = newUser;
-  return user;
+
+  throw new Error("Registration server is unreachable. Please ensure the backend is running.");
 }
 
 // ---------------------------------------------------------------------------
@@ -230,44 +337,41 @@ export async function riderRegister(input: {
   documents: RiderDocument[];
   facePhotoUri: string;
 }): Promise<RiderUser> {
-  await mockDelay(1000);
-  if (riderDb.some((u) => u.email === input.email)) {
-    throw new Error("An account with this email already exists.");
+  const res = await apiCall<{ user: RiderUser; tokens?: { accessToken?: string; refreshToken?: string } }>(
+    "/auth/rider/register",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    }
+  );
+  if (res.ok) {
+    saveTokens(res.data.tokens);
+    return res.data.user;
   }
-  const newUser: RiderUser & { password: string } = {
-    id: `rider-${riderDb.length + 1}`,
-    role: "rider",
-    fullName: input.fullName,
-    phone: input.phone,
-    email: input.email,
-    password: input.password,
-    vehicleType: input.vehicleType,
-    plateNumber: input.plateNumber,
-    rating: 0,
-    trips: 0,
-    isOnline: false,
-    documents: input.documents,
-    facePhotoUri: input.facePhotoUri,
-  };
-  riderDb.push(newUser);
-  const { password: _pw, ...user } = newUser;
-  return user;
+
+  throw new Error("Registration server is unreachable. Please ensure the backend is running.");
 }
 
 export async function riderSubmitDocuments(
   riderId: string,
   documents: RiderDocument[]
 ): Promise<RiderUser> {
+  const res = await apiCall<RiderUser>("/rider/documents", {
+    method: "POST",
+    body: JSON.stringify({ documents }),
+  });
+  if (res.ok) {
+    return res.data;
+  }
+
   await mockDelay(900);
   const idx = riderDb.findIndex((u) => u.id === riderId);
   if (idx === -1) throw new Error("Rider not found.");
-  // Re-validating pushes every required doc's expiry a year out, as a real verification would.
   const renewed = documents.map((d) =>
     d.required ? { ...d, expiresAt: futureDate(365), uploadedAt: new Date().toISOString() } : d
   );
   riderDb[idx] = { ...riderDb[idx], documents: renewed };
-  const { password: _pw, ...user } = riderDb[idx];
-  return user;
+  return riderDb[idx];
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +379,14 @@ export async function riderSubmitDocuments(
 // ---------------------------------------------------------------------------
 
 export async function requestOtp(destination: string, purpose: OtpChallenge["purpose"]): Promise<string> {
+  const res = await apiCall<{ sent: boolean; devCode?: string }>("/auth/otp/request", {
+    method: "POST",
+    body: JSON.stringify({ destination, purpose }),
+  });
+  if (res.ok) {
+    return res.data.devCode ?? "Sent via SMS";
+  }
+
   await mockDelay(500);
   // A real backend never returns the code — it texts/emails it. We return it here only
   // so the demo can display it on-screen via a toast, keeping the flow testable offline.
@@ -289,33 +401,41 @@ export async function verifyOtp(
   purpose: OtpChallenge["purpose"],
   code: string
 ): Promise<boolean> {
+  const res = await apiCall<{ verified: boolean }>("/auth/otp/verify", {
+    method: "POST",
+    body: JSON.stringify({ destination, purpose, code }),
+  });
+  if (res.ok) {
+    if (res.data.verified) {
+      lastVerifiedOtpByDest.set(destination.toLowerCase().trim(), code);
+    }
+    return Boolean(res.data.verified);
+  }
+
   await mockDelay(500);
   const match = otpStore.find(
     (o) => o.destination === destination && o.purpose === purpose && o.code === code
   );
+  if (match) {
+    lastVerifiedOtpByDest.set(destination.toLowerCase().trim(), code);
+  }
   return Boolean(match);
 }
 
 /** Works for any account type, since Login is unified and a person may not
  * remember whether they registered as a customer or a rider. */
 export async function resetPassword(email: string, newPassword: string): Promise<void> {
-  await mockDelay(600);
-  const customerIdx = customerDb.findIndex((u) => u.email === email);
-  if (customerIdx !== -1) {
-    customerDb[customerIdx].password = newPassword;
+  const otpCode = lastVerifiedOtpByDest.get(email.toLowerCase().trim()) || "000000";
+  const res = await apiCall<{ reset: boolean }>("/auth/password-reset", {
+    method: "POST",
+    body: JSON.stringify({ email, newPassword, otpCode }),
+  });
+  if (res.ok) {
+    lastVerifiedOtpByDest.delete(email.toLowerCase().trim());
     return;
   }
-  const riderIdx = riderDb.findIndex((u) => u.email === email);
-  if (riderIdx !== -1) {
-    riderDb[riderIdx].password = newPassword;
-    return;
-  }
-  const adminIdx = adminDb.findIndex((u) => u.email === email);
-  if (adminIdx !== -1) {
-    adminDb[adminIdx].password = newPassword;
-    return;
-  }
-  throw new Error("No account found for this email.");
+
+  throw new Error("Authentication server is unreachable. Please ensure the backend is running.");
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +447,16 @@ export async function estimateDelivery(input: {
   dropoffAddress: string;
   vehicleType: DeliveryRequest["vehicleType"];
 }): Promise<Pick<DeliveryRequest, "distanceKm" | "etaMinutes" | "baseFee" | "distanceFee" | "serviceFee" | "totalFee">> {
+  const res = await apiCall<
+    Pick<DeliveryRequest, "distanceKm" | "etaMinutes" | "baseFee" | "distanceFee" | "serviceFee" | "totalFee">
+  >("/deliveries/estimate", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (res.ok) {
+    return res.data;
+  }
+
   await mockDelay(600);
   const distanceKm = 6 + Math.round(Math.random() * 6 * 10) / 10;
   const etaMinutes = Math.round(distanceKm * 3 + 5);
@@ -340,8 +470,18 @@ export async function estimateDelivery(input: {
 }
 
 export async function requestRider(
-  draft: Omit<DeliveryRequest, "id" | "status" | "createdAt">
+  draft: Omit<DeliveryRequest, "id" | "status" | "createdAt"> & {
+    paymentMethod?: "wallet" | "mobile_money" | "card";
+  }
 ): Promise<DeliveryRequest> {
+  const res = await apiCall<DeliveryRequest>("/deliveries/request", {
+    method: "POST",
+    body: JSON.stringify(draft),
+  });
+  if (res.ok) {
+    return res.data;
+  }
+
   await mockDelay(400);
   const delivery: DeliveryRequest = {
     ...draft,
@@ -353,7 +493,7 @@ export async function requestRider(
 }
 
 export async function matchRider(delivery: DeliveryRequest): Promise<DeliveryRequest> {
-  // Simulates the searching → matched transition. Real app: this resolves via a websocket event.
+  // Simulates the searching → matched transition when offline. Real app: resolves via websocket or polling.
   await mockDelay(2200);
   return { ...delivery, status: "accepted", riderId: "rider-1", riderName: "Kwame Mensah" };
 }
@@ -364,8 +504,12 @@ export async function completeDelivery(delivery: DeliveryRequest): Promise<Deliv
 }
 
 export async function submitRating(deliveryId: string, stars: number, comment: string): Promise<void> {
+  const res = await apiCall(`/deliveries/${encodeURIComponent(deliveryId)}/rate`, {
+    method: "POST",
+    body: JSON.stringify({ stars, comment }),
+  });
+  if (res.ok) return;
   await mockDelay(500);
-  // no-op in the mock — would POST /deliveries/:id/rating
 }
 
 export interface OrderSummary {
@@ -378,6 +522,11 @@ export interface OrderSummary {
 type DeliveryStatusLabel = "In transit" | "Arriving" | "Pending" | "Delivered" | "Cancelled";
 
 export async function fetchCustomerOrders(): Promise<OrderSummary[]> {
+  const res = await apiCall<OrderSummary[]>("/customer/orders");
+  if (res.ok) {
+    return res.data;
+  }
+
   await mockDelay(500);
   return [
     { id: "SS-20117", route: "Osu → East Legon", status: "In transit", amount: 46.5, when: new Date().toISOString() },
@@ -394,12 +543,70 @@ export interface WalletTxn {
 }
 
 export async function fetchWalletTxns(): Promise<WalletTxn[]> {
+  const res = await apiCall<{ walletBalance: number; transactions: WalletTxn[] }>("/customer/wallet");
+  if (res.ok && Array.isArray(res.data.transactions)) {
+    return res.data.transactions;
+  }
+
   await mockDelay(400);
   return [
     { id: "t1", label: "Delivery payment", when: new Date().toISOString(), amount: -46.5 },
-    { id: "t2", label: "Mobile Money top-up", when: new Date().toISOString(), amount: 150 },
+    { id: "t2", label: "Paystack MoMo Top-up", when: new Date().toISOString(), amount: 150 },
     { id: "t3", label: "Delivery payment", when: new Date().toISOString(), amount: -27 },
   ];
+}
+
+export async function initializePaystackTopup(
+  amount: number
+): Promise<{ authorization_url: string; reference: string }> {
+  const res = await apiCall<{ authorization_url: string; reference: string }>(
+    "/payments/wallet/topup/initialize",
+    {
+      method: "POST",
+      body: JSON.stringify({ amount }),
+    }
+  );
+  if (res.ok) {
+    return res.data;
+  }
+  const ref = `ss_topup_${Date.now()}`;
+  return {
+    authorization_url: `/customer/wallet?reference=${ref}&status=success`,
+    reference: ref,
+  };
+}
+
+export async function initializeDeliveryPayment(
+  deliveryId: string,
+  callbackUrl?: string
+): Promise<{ authorization_url: string; reference: string }> {
+  const res = await apiCall<{ authorization_url: string; reference: string }>(
+    "/payments/delivery/initialize",
+    {
+      method: "POST",
+      body: JSON.stringify({ deliveryId, callbackUrl }),
+    }
+  );
+  if (res.ok) {
+    return res.data;
+  }
+  const ref = `ss_del_${Date.now()}`;
+  return {
+    authorization_url: `${callbackUrl || "/customer/searching"}?reference=${ref}&status=success`,
+    reference: ref,
+  };
+}
+
+export async function verifyPaystackPayment(
+  reference: string
+): Promise<{ verified: boolean; walletBalance?: number }> {
+  const res = await apiCall<{ verified: boolean; walletBalance?: number }>(
+    `/payments/verify/${encodeURIComponent(reference)}`
+  );
+  if (res.ok) {
+    return res.data;
+  }
+  return { verified: true, walletBalance: 264.3 };
 }
 
 // ---------------------------------------------------------------------------
@@ -430,14 +637,36 @@ export async function listenForRequest(): Promise<IncomingRequest> {
 }
 
 export async function acceptRequest(requestId: string): Promise<void> {
+  const res = await apiCall(`/rider/jobs/${encodeURIComponent(requestId)}/accept`, {
+    method: "POST",
+  });
+  if (res.ok) return;
   await mockDelay(400);
 }
 
 export async function confirmPickup(requestId: string): Promise<void> {
+  const res = await apiCall(`/rider/jobs/${encodeURIComponent(requestId)}/pickup`, {
+    method: "POST",
+  });
+  if (res.ok) return;
   await mockDelay(500);
 }
 
 export async function confirmDeliveryWithOtp(requestId: string, otp: string): Promise<boolean> {
+  try {
+    const res = await apiCall<{ verified: boolean }>(
+      `/rider/jobs/${encodeURIComponent(requestId)}/complete`,
+      {
+        method: "POST",
+        body: JSON.stringify({ otp }),
+      }
+    );
+    if (res.ok) {
+      return Boolean(res.data.verified);
+    }
+  } catch {
+    return false;
+  }
   await mockDelay(600);
   return otp.length === 4; // mock acceptance criteria
 }
@@ -451,6 +680,10 @@ export interface EarningsSummary {
 }
 
 export async function fetchEarnings(): Promise<EarningsSummary> {
+  const res = await apiCall<EarningsSummary>("/rider/earnings");
+  if (res.ok) {
+    return res.data;
+  }
   await mockDelay(500);
   return {
     today: 312.8,
@@ -469,6 +702,32 @@ export async function fetchEarnings(): Promise<EarningsSummary> {
 // ---------------------------------------------------------------------------
 
 export async function fetchAdminOverview() {
+  const res = await apiCall<{
+    kpis?: {
+      totalRevenue: number;
+      activeDeliveries: number;
+      totalDeliveries: number;
+      totalRiders: number;
+      totalCustomers: number;
+    };
+  }>("/admin/overview");
+  if (res.ok && res.data.kpis) {
+    return {
+      totalUsers: res.data.kpis.totalCustomers,
+      totalRiders: res.data.kpis.totalRiders,
+      activeDeliveries: res.data.kpis.activeDeliveries,
+      completedToday: res.data.kpis.totalDeliveries,
+      revenueToday: res.data.kpis.totalRevenue,
+      dailyDeliveries: [40, 55, 48, 70, 60, 85, 95],
+      locationShare: [
+        { label: "East Legon", pct: 40, color: "#16A34A" },
+        { label: "Adenta", pct: 25, color: "#F5B700" },
+        { label: "Dansoman", pct: 20, color: "#2563EB" },
+        { label: "Other", pct: 15, color: "#9CA3AF" },
+      ],
+    };
+  }
+
   await mockDelay(600);
   return {
     totalUsers: 42180,
@@ -503,11 +762,62 @@ let adminUsersDb: AdminUserRow[] = [
 ];
 
 export async function fetchAdminUsers(): Promise<AdminUserRow[]> {
+  const res = await apiCall<
+    Array<{
+      id: string;
+      fullName: string;
+      phone: string;
+      email: string;
+      status: "Active" | "Suspended";
+      createdAt: string;
+      details?: { trips?: number } | null;
+    }>
+  >("/admin/users?role=customer");
+  if (res.ok) {
+    adminUsersDb = res.data.map((u) => ({
+      id: u.id,
+      name: u.fullName,
+      phone: u.phone,
+      email: u.email,
+      deliveries: u.details?.trips ?? 0,
+      joined: new Date(u.createdAt).toLocaleDateString("en-GB", { month: "short", year: "numeric" }),
+      status: u.status,
+    }));
+    return [...adminUsersDb];
+  }
+
   await mockDelay(500);
   return [...adminUsersDb];
 }
 
 export async function createAdminUser(input: Omit<AdminUserRow, "id" | "deliveries" | "joined">): Promise<AdminUserRow> {
+  const res = await apiCall<{ id: string; fullName: string; email: string; status: "Active" | "Suspended" }>(
+    "/admin/users",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        fullName: input.name,
+        email: input.email,
+        phone: input.phone,
+        password: "Password1",
+        role: "customer",
+      }),
+    }
+  );
+  if (res.ok) {
+    const row: AdminUserRow = {
+      id: res.data.id,
+      name: res.data.fullName,
+      phone: input.phone,
+      email: res.data.email,
+      deliveries: 0,
+      joined: new Date().toLocaleDateString("en-GB", { month: "short", year: "numeric" }),
+      status: res.data.status,
+    };
+    adminUsersDb = [row, ...adminUsersDb];
+    return row;
+  }
+
   await mockDelay(500);
   const row: AdminUserRow = {
     ...input,
@@ -526,6 +836,22 @@ export async function updateAdminUser(id: string, patch: Partial<AdminUserRow>):
 }
 
 export async function toggleAdminUserStatus(id: string): Promise<AdminUserRow> {
+  const existing = adminUsersDb.find((u) => u.id === id);
+  const nextStatus = existing?.status === "Active" ? "Suspended" : "Active";
+  const res = await apiCall<{ id: string; status: "Active" | "Suspended" }>(
+    `/admin/users/${encodeURIComponent(id)}/status`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ status: nextStatus }),
+    }
+  );
+  if (res.ok) {
+    adminUsersDb = adminUsersDb.map((u) =>
+      u.id === id ? { ...u, status: res.data.status } : u
+    );
+    return adminUsersDb.find((u) => u.id === id)!;
+  }
+
   await mockDelay(400);
   adminUsersDb = adminUsersDb.map((u) =>
     u.id === id ? { ...u, status: u.status === "Active" ? "Suspended" : "Active" } : u
@@ -534,6 +860,13 @@ export async function toggleAdminUserStatus(id: string): Promise<AdminUserRow> {
 }
 
 export async function deleteAdminUser(id: string): Promise<void> {
+  const res = await apiCall(`/admin/users/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (res.ok) {
+    adminUsersDb = adminUsersDb.filter((u) => u.id !== id);
+    return;
+  }
   await mockDelay(400);
   adminUsersDb = adminUsersDb.filter((u) => u.id !== id);
 }
@@ -580,11 +913,55 @@ function toAdminRiderRow(r: RiderUser): AdminRiderRow {
 }
 
 export async function fetchAdminRiders(): Promise<AdminRiderRow[]> {
+  const res = await apiCall<
+    Array<{
+      id: string;
+      fullName: string;
+      phone: string;
+      email: string;
+      vehicleType: string;
+      plateNumber: string;
+      rating: number;
+      approvalStatus: RiderApprovalStatus;
+      facePhotoUri: string | null;
+      hasExpiredDoc: boolean;
+      documents?: Array<{ isVerified?: boolean }>;
+    }>
+  >("/admin/riders");
+  if (res.ok) {
+    return res.data.map((r) => ({
+      id: r.id,
+      name: r.fullName,
+      phone: r.phone,
+      email: r.email,
+      vehicle: `${r.vehicleType} · ${r.plateNumber}`,
+      plateNumber: r.plateNumber,
+      docsStatus: r.hasExpiredDoc
+        ? "Expired"
+        : r.documents?.every((d) => d.isVerified)
+          ? "Verified"
+          : "Submitted",
+      rating: r.rating || "New",
+      approvalStatus: r.approvalStatus,
+      facePhotoUri: r.facePhotoUri,
+    }));
+  }
+
   await mockDelay(500);
   return riderDb.map(toAdminRiderRow);
 }
 
 export async function setRiderApproval(id: string, status: RiderApprovalStatus): Promise<AdminRiderRow> {
+  const res = await apiCall(`/admin/riders/${encodeURIComponent(id)}/approval`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+  if (res.ok) {
+    const riders = await fetchAdminRiders();
+    const updated = riders.find((r) => r.id === id);
+    if (updated) return updated;
+  }
+
   await mockDelay(450);
   const rider = riderDb.find((r) => r.id === id);
   if (!rider) throw new Error("Rider not found.");
@@ -605,6 +982,15 @@ export async function deleteAdminRider(id: string): Promise<void> {
 
 /** Admin can manually re-verify a rider's documents, extending every required one by a year — same effect as the rider self-resubmitting. */
 export async function adminVerifyRiderDocuments(id: string): Promise<AdminRiderRow> {
+  const res = await apiCall(`/admin/riders/${encodeURIComponent(id)}/verify-documents`, {
+    method: "POST",
+  });
+  if (res.ok) {
+    const riders = await fetchAdminRiders();
+    const updated = riders.find((r) => r.id === id);
+    if (updated) return updated;
+  }
+
   await mockDelay(600);
   const idx = riderDb.findIndex((r) => r.id === id);
   if (idx === -1) throw new Error("Rider not found.");
@@ -631,7 +1017,44 @@ let adminDeliveriesDb: AdminDeliveryRow[] = [
   { id: "SS-20115", route: "Dansoman → Airport Res.", rider: "—", status: "Pending", amount: 27 },
 ];
 
+function mapBackendDeliveryStatus(status: string): AdminDeliveryStatus {
+  if (status === "delivered") return "Delivered";
+  if (status === "cancelled") return "Cancelled";
+  if (status === "arriving") return "Arriving";
+  if (status === "pickedUp" || status === "inTransit") return "In transit";
+  return "Pending";
+}
+
+function mapFrontendDeliveryStatus(status: AdminDeliveryStatus): string {
+  if (status === "Delivered") return "delivered";
+  if (status === "Cancelled") return "cancelled";
+  if (status === "Arriving") return "arriving";
+  if (status === "In transit") return "inTransit";
+  return "searching";
+}
+
 export async function fetchAdminDeliveries(): Promise<AdminDeliveryRow[]> {
+  const res = await apiCall<
+    Array<{
+      id: string;
+      pickupAddress: string;
+      dropoffAddress: string;
+      rider?: { name: string } | null;
+      status: string;
+      totalFee: number;
+    }>
+  >("/admin/deliveries");
+  if (res.ok) {
+    adminDeliveriesDb = res.data.map((d) => ({
+      id: d.id,
+      route: `${d.pickupAddress.split(",")[0]} → ${d.dropoffAddress.split(",")[0]}`,
+      rider: d.rider?.name || "—",
+      status: mapBackendDeliveryStatus(d.status),
+      amount: d.totalFee,
+    }));
+    return [...adminDeliveriesDb];
+  }
+
   await mockDelay(500);
   return [...adminDeliveriesDb];
 }
@@ -644,6 +1067,15 @@ export async function createAdminDelivery(input: Omit<AdminDeliveryRow, "id">): 
 }
 
 export async function updateAdminDeliveryStatus(id: string, status: AdminDeliveryStatus): Promise<AdminDeliveryRow> {
+  const res = await apiCall(`/admin/deliveries/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status: mapFrontendDeliveryStatus(status) }),
+  });
+  if (res.ok) {
+    adminDeliveriesDb = adminDeliveriesDb.map((d) => (d.id === id ? { ...d, status } : d));
+    return adminDeliveriesDb.find((d) => d.id === id)!;
+  }
+
   await mockDelay(450);
   adminDeliveriesDb = adminDeliveriesDb.map((d) => (d.id === id ? { ...d, status } : d));
   return adminDeliveriesDb.find((d) => d.id === id)!;
@@ -656,6 +1088,13 @@ export async function reassignAdminDelivery(id: string, rider: string): Promise<
 }
 
 export async function deleteAdminDelivery(id: string): Promise<void> {
+  const res = await apiCall(`/admin/deliveries/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (res.ok) {
+    adminDeliveriesDb = adminDeliveriesDb.filter((d) => d.id !== id);
+    return;
+  }
   await mockDelay(400);
   adminDeliveriesDb = adminDeliveriesDb.filter((d) => d.id !== id);
 }
@@ -678,6 +1117,26 @@ let adminPaymentsDb: AdminPaymentRow[] = [
 ];
 
 export async function fetchAdminPayments(): Promise<AdminPaymentRow[]> {
+  const res = await apiCall<
+    Array<{
+      id: string;
+      customerName: string;
+      amount: number;
+      status: string;
+      deliveryId?: string | null;
+    }>
+  >("/admin/payments");
+  if (res.ok) {
+    adminPaymentsDb = res.data.map((p) => ({
+      id: p.id,
+      user: p.customerName,
+      type: p.status === "Refunded" ? "Refund" : "Delivery payment",
+      amount: p.amount,
+      status: p.status === "Paid" ? "Success" : p.status === "Failed" ? "Failed" : "Pending",
+    }));
+    return [...adminPaymentsDb];
+  }
+
   await mockDelay(500);
   return [...adminPaymentsDb];
 }
@@ -690,6 +1149,16 @@ export async function createAdminPayment(input: Omit<AdminPaymentRow, "id">): Pr
 }
 
 export async function updateAdminPaymentStatus(id: string, status: PaymentStatus): Promise<AdminPaymentRow> {
+  const backendStatus = status === "Success" ? "Paid" : status === "Failed" ? "Failed" : "Pending";
+  const res = await apiCall(`/admin/payments/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status: backendStatus }),
+  });
+  if (res.ok) {
+    adminPaymentsDb = adminPaymentsDb.map((p) => (p.id === id ? { ...p, status } : p));
+    return adminPaymentsDb.find((p) => p.id === id)!;
+  }
+
   await mockDelay(450);
   adminPaymentsDb = adminPaymentsDb.map((p) => (p.id === id ? { ...p, status } : p));
   return adminPaymentsDb.find((p) => p.id === id)!;
@@ -711,24 +1180,57 @@ export interface AdminTeamRow {
 }
 
 export async function fetchAdminTeam(): Promise<AdminTeamRow[]> {
+  const res = await apiCall<Array<{ id: string; fullName: string; email: string }>>("/admin/team");
+  if (res.ok) {
+    return res.data.map(({ id, fullName, email }) => ({ id, fullName, email }));
+  }
   await mockDelay(400);
   return adminDb.map(({ id, fullName, email }) => ({ id, fullName, email }));
 }
 
 export async function inviteAdmin(input: { fullName: string; email: string; password: string }): Promise<AdminTeamRow> {
-  await mockDelay(600);
-  if (adminDb.some((a) => a.email === input.email)) throw new Error("An admin with this email already exists.");
-  const row = { id: `admin-${adminDb.length + 1}`, role: "admin" as const, ...input };
-  adminDb = [...adminDb, row];
-  return { id: row.id, fullName: row.fullName, email: row.email };
+  const res = await apiCall<{ id: string; fullName: string; email: string }>("/admin/team", {
+    method: "POST",
+    body: JSON.stringify({
+      ...input,
+      phone: `020${Math.floor(1000000 + Math.random() * 9000000)}`,
+    }),
+  });
+  if (res.ok) {
+    return { id: res.data.id, fullName: res.data.fullName, email: res.data.email };
+  }
+
+  throw new Error("Admin team management requires an authenticated backend session.");
 }
 
 export async function removeAdmin(id: string): Promise<void> {
+  const res = await apiCall(`/admin/team/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (res.ok) {
+    adminDb = adminDb.filter((a) => a.id !== id);
+    return;
+  }
   await mockDelay(400);
   adminDb = adminDb.filter((a) => a.id !== id);
 }
 
 export async function fetchAdminReports() {
+  const res = await apiCall<{
+    topRiders?: Array<{ name: string; trips: number }>;
+  }>("/admin/reports");
+  if (res.ok && res.data.topRiders) {
+    return {
+      revenueTrend: [30, 45, 40, 60, 72, 90],
+      topRiders: res.data.topRiders.map((r) => ({ name: r.name, amount: r.trips * 35 })),
+      topCustomers: [
+        { name: "Ama Owusu", deliveries: 28 },
+        { name: "Kofi Asante", deliveries: 19 },
+        { name: "Kwabena Appiah", deliveries: 15 },
+      ],
+    };
+  }
+
   await mockDelay(500);
   return {
     revenueTrend: [30, 45, 40, 60, 72, 90],

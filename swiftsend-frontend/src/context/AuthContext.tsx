@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import { AdminUser, CustomerUser, RiderUser } from "@/types";
 import { storage } from "@/services/storage";
 import { hasExpiredRequiredDocument, scheduleDocumentExpiryReminders } from "@/services/notifications";
-import { LoginResult } from "@/services/mockApi";
+import { LoginResult, logout } from "@/services/mockApi";
 
 interface Session {
   role: "customer" | "rider" | "admin";
@@ -63,6 +63,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [persist]);
 
   const signOut = useCallback(async () => {
+    await logout();
     await persist(null);
   }, [persist]);
 

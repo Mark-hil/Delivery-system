@@ -1,6 +1,7 @@
 import React from "react";
 import { Navigate, Outlet } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
+import { hasActiveAuthToken } from "@/services/mockApi";
 import { DocumentValidationPage } from "@/pages/rider/DocumentValidationPage";
 
 /** Blocks access to auth pages (login/register/etc.) once a session exists — sends
@@ -34,7 +35,7 @@ export const RequireRider: React.FC = () => {
 export const RequireAdmin: React.FC = () => {
   const { session, booting } = useAuth();
   if (booting) return <BootingScreen />;
-  if (!session) return <Navigate to="/login" replace />;
+  if (!session || !hasActiveAuthToken()) return <Navigate to="/login" replace />;
   if (session.role !== "admin") return <Navigate to="/" replace />;
   return <Outlet />;
 };

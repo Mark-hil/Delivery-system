@@ -21,7 +21,7 @@ interface DeliveryContextValue {
   loadingEstimate: boolean;
   loadingMatch: boolean;
   fetchEstimate: () => Promise<void>;
-  confirmRequest: () => Promise<void>;
+  confirmRequest: (paymentMethod?: "wallet" | "mobile_money" | "card") => Promise<DeliveryRequest | undefined>;
   waitForMatch: () => Promise<void>;
   finishDelivery: () => Promise<void>;
   resetFlow: () => void;
@@ -65,11 +65,15 @@ export const DeliveryProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [draft]);
 
-  const confirmRequest = useCallback(async () => {
-    if (!estimate) return;
-    const delivery = await api.requestRider({ ...draft, ...estimate });
-    setCurrent(delivery);
-  }, [draft, estimate]);
+  const confirmRequest = useCallback(
+    async (paymentMethod: "wallet" | "mobile_money" | "card" = "mobile_money") => {
+      if (!estimate) return undefined;
+      const delivery = await api.requestRider({ ...draft, ...estimate, paymentMethod });
+      setCurrent(delivery);
+      return delivery;
+    },
+    [draft, estimate]
+  );
 
   const waitForMatch = useCallback(async () => {
     if (!current) return;
