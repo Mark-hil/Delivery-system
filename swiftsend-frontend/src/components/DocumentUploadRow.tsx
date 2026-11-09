@@ -1,6 +1,7 @@
-import React, { useRef } from "react";
+import React, { useRef, useState } from "react";
 import { RiderDocument } from "@/types";
 import { daysUntil, formatDate } from "@/utils/formatters";
+import { uploadMediaToCloud } from "@/services/mockApi";
 
 interface Props {
   document: RiderDocument;
@@ -9,12 +10,22 @@ interface Props {
 
 export const DocumentUploadRow: React.FC<Props> = ({ document, onChange }) => {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const url = URL.createObjectURL(file);
-    onChange(url);
+
+    setUploading(true);
+    try {
+      const cloudUrl = await uploadMediaToCloud(file, "document");
+      onChange(cloudUrl);
+    } catch {
+      const fallbackUrl = URL.createObjectURL(file);
+      onChange(fallbackUrl);
+    } finally {
+      setUploading(false);
+    }
   };
 
   const expired = document.expiresAt ? daysUntil(document.expiresAt) <= 0 : false;
@@ -24,6 +35,7 @@ export const DocumentUploadRow: React.FC<Props> = ({ document, onChange }) => {
     <button
       type="button"
       onClick={() => inputRef.current?.click()}
+      disabled={uploading}
       style={{
         display: "flex",
         alignItems: "center",
@@ -35,11 +47,39 @@ export const DocumentUploadRow: React.FC<Props> = ({ document, onChange }) => {
         border: `1.4px ${document.uri ? "solid var(--green-soft)" : "dashed var(--line)"}`,
         background: document.uri ? "#FBFEFC" : "var(--white)",
         textAlign: "left",
+        opacity: uploading ? 0.7 : 1,
       }}
     >
-      <input ref={inputRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={handleFile} />
-      {document.uri ? (
-        <img src={document.uri} alt={document.label} style={{ width: 36, height: 36, borderRadius: 10, objectFit: "cover" }} />
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*,application/pdf"
+        capture="environment"
+        style={{ display: "none" }}
+        onChange={handleFile}
+      />
+      {uploading ? (
+        <div
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 10,
+            background: "var(--bg)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 14,
+            flexShrink: 0,
+          }}
+        >
+          ⏳
+        </div>
+      ) : document.uri ? (
+        <img
+          src={document.uri}
+          alt={document.label}
+          style={{ width: 36, height: 36, borderRadius: 10, objectFit: "cover" }}
+        />
       ) : (
         <div
           style={{
@@ -69,7 +109,9 @@ export const DocumentUploadRow: React.FC<Props> = ({ document, onChange }) => {
             color: expired ? "var(--danger)" : expiringSoon ? "var(--warning)" : "var(--ink-soft)",
           }}
         >
-          {document.uri
+          {uploading
+            ? "Uploading to cloud…"
+            : document.uri
             ? expired
               ? `Expired ${document.expiresAt ? formatDate(document.expiresAt) : ""}`
               : document.expiresAt
@@ -78,7 +120,9 @@ export const DocumentUploadRow: React.FC<Props> = ({ document, onChange }) => {
             : "Click to upload"}
         </div>
       </div>
-      <span style={{ fontSize: 18, color: document.uri ? "var(--green)" : "var(--gray)" }}>{document.uri ? "✓" : "+"}</span>
+      <span style={{ fontSize: 18, color: document.uri ? "var(--green)" : "var(--gray)" }}>
+        {uploading ? "⋯" : document.uri ? "✓" : "+"}
+      </span>
     </button>
   );
 };

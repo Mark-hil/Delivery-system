@@ -133,6 +133,43 @@ async function apiCall<T>(
   return { ok: true, data };
 }
 
+export async function uploadMediaToCloud(
+  fileOrBase64: File | string,
+  kind: "document" | "face" | "proof" | "avatar" = "document"
+): Promise<string> {
+  let dataUri: string;
+
+  if (typeof fileOrBase64 === "string") {
+    dataUri = fileOrBase64;
+  } else {
+    dataUri = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = (err) => reject(err);
+      reader.readAsDataURL(fileOrBase64);
+    });
+  }
+
+  try {
+    const res = await apiCall<{ publicUrl: string; fileKey: string }>(
+      "/uploads/direct",
+      {
+        method: "POST",
+        body: JSON.stringify({ dataUri, kind }),
+      },
+      false
+    );
+
+    if (res.ok && res.data.publicUrl) {
+      return res.data.publicUrl;
+    }
+  } catch {
+    // Fall back to local dataUri if network upload fails
+  }
+
+  return dataUri;
+}
+
 export async function logout(): Promise<void> {
   const refreshToken =
     typeof window !== "undefined" ? localStorage.getItem(REFRESH_TOKEN_KEY) : null;

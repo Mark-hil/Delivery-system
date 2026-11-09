@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { uploadMediaToCloud } from "@/services/mockApi";
 
 interface Props {
   value: string | null;
@@ -7,18 +8,13 @@ interface Props {
 
 type CameraState = "idle" | "starting" | "live" | "unavailable";
 
-/**
- * Captures a live selfie via the device camera (front-facing where available)
- * for rider identity verification — distinct from the document uploads, which
- * accept existing photos/scans. Falls back to a plain file picker if the browser
- * or device has no camera / denies permission, so the form never gets stuck.
- */
 export const FaceCapture: React.FC<Props> = ({ value, onChange }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [state, setState] = useState<CameraState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
 
   const stopStream = () => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -48,7 +44,7 @@ export const FaceCapture: React.FC<Props> = ({ value, onChange }) => {
     }
   };
 
-  const capture = () => {
+  const capture = async () => {
     const video = videoRef.current;
     if (!video) return;
     const canvas = document.createElement("canvas");
@@ -57,16 +53,24 @@ export const FaceCapture: React.FC<Props> = ({ value, onChange }) => {
     canvas.height = size;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    // Center-crop to a square and mirror it so the preview matches what the
-    // person saw of themselves while the camera was live.
     const sx = (video.videoWidth - size) / 2;
     const sy = (video.videoHeight - size) / 2;
     ctx.translate(size, 0);
     ctx.scale(-1, 1);
     ctx.drawImage(video, sx, sy, size, size, 0, 0, size, size);
-    onChange(canvas.toDataURL("image/jpeg", 0.85));
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
     stopStream();
     setState("idle");
+
+    setUploading(true);
+    try {
+      const cloudUrl = await uploadMediaToCloud(dataUrl, "face");
+      onChange(cloudUrl);
+    } catch {
+      onChange(dataUrl);
+    } finally {
+      setUploading(false);
+    }
   };
 
   const retake = () => {
@@ -74,11 +78,31 @@ export const FaceCapture: React.FC<Props> = ({ value, onChange }) => {
     startCamera();
   };
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    onChange(URL.createObjectURL(file));
+
+    setUploading(true);
+    try {
+      const cloudUrl = await uploadMediaToCloud(file, "face");
+      onChange(cloudUrl);
+    } catch {
+      onChange(URL.createObjectURL(file));
+    } finally {
+      setUploading(false);
+    }
   };
+
+  if (uploading) {
+    return (
+      <div style={{ textAlign: "center", margin: "20px 22px" }}>
+        <div className="spinner" style={{ margin: "0 auto 10px" }} />
+        <p style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-soft)" }}>
+          Uploading selfie to Cloudinary…
+        </p>
+      </div>
+    );
+  }
 
   if (value) {
     return (
